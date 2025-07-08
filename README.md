@@ -1,93 +1,94 @@
-# KathWare Media Player
+## KathWare Media Player — Extensión accesible para subtítulos
 
-**Extensión accesible para navegador** que permite la lectura automática de subtítulos en plataformas de streaming, incluyendo sitios con reproductores inaccesibles como Flow, ok.ru, entre otros.
-
----
-
-## ✍️ Autora
-
-[Katherine Vargas](https://kathware.com.ar) — Proyecto del ecosistema [KathWare](https://kathware.com.ar)
+📌 **Autora:** Katherine Vargas | [(KathWare)](https://kathware.com.ar)  
+📅 **Última actualización:** 2025-07-08  
 
 ---
 
-## 🎯 Objetivo del reproductor
+### 📌 **Descripción del Proyecto**
 
-- Leer subtítulos visibles automáticamente (subtítulos comunes o closed captions).
-- Permitir el cambio de fuente (TRACK vs. CC).
-- Elegir entre sintetizador del sistema o lector de pantalla.
-- Activar/desactivar el panel accesible con un atajo.
-- Detectar reproductores inaccesibles y actuar como overlay.
+**KathWare Media Player** es una extensión accesible para navegador que permite la lectura automática de subtítulos en plataformas de video, incluso cuando el reproductor no ofrece accesibilidad nativa (como ocurre en Flow, ok.ru, entre otras).
 
----
+Forma parte del ecosistema KathWare y se encuentra alojada como proyecto individual dentro del entorno GitHub de `dragonmoon1522`.
 
-## ✅ Funciones principales
+Incluye:
 
-- Panel flotante accesible con controles de lectura y configuración.
-- Atajo universal de teclado: **Ctrl + Shift + K** para abrir/cerrar.
-- Detección automática de subtítulos en pantalla.
-- Lectura compatible con screen readers o sintetizador del sistema.
-- Control total desde teclado: volumen, velocidad, retroceso, pausa.
-- Selección de fuente de subtítulos: `track` (convencional) o `visual` (closed captions visibles).
-- Compatible con múltiples plataformas (Netflix, Flow, Disney+, etc.).
-- Auto detección de reproductores no accesibles y fallback alternativo.
-- Compatible con teclado, mouse y tecnologías de asistencia.
+- Panel accesible flotante con opciones de control total desde teclado.
+- Lectura de subtítulos por lector de pantalla o sintetizador del sistema.
+- Detección de reproductores no accesibles con overlay automático.
+- Funciones avanzadas para pruebas de accesibilidad y compatibilidad.
 
 ---
 
-## 🧪 Instalación del KathWare Media Player
+### 🛠️ Tecnologías utilizadas
 
-### 1. Descarga
-
-Descargá o cloná este repositorio en tu computadora.
-
-### 2. Instalación manual en Chrome o Edge
-
-1. Abrí el navegador (Chrome o Edge).
-2. Ingresá a la dirección `chrome://extensions/`.
-3. Activá el **modo de desarrollador** (generalmente en la parte superior derecha).
-4. Hacé clic en **“Cargar descomprimida”**.
-5. Seleccioná la carpeta donde descargaste o clonaste el repositorio.
-
-> Si usás lector de pantalla, el botón para "Cargar descomprimida" puede encontrarse tabulando desde el encabezado de extensiones.
+- HTML, CSS y JavaScript puro.
+- Sintetizador de voz (SpeechSynthesis API).
+- Almacenamiento local con `store.db`.
+- Integración con múltiples plataformas mediante detección de `<video>` y subtítulos visibles o por `track`.
 
 ---
 
-## 📺 Pruebas y visualización del reproductor
+### 📚 Licencias y manifiestos
 
-El reproductor se activa automáticamente en páginas compatibles.  
-También podés abrir directamente el archivo `popup.html` para probar sus funciones.
+- 🛡️ [Licencia de Accesibilidad Universal (LAU) — Español](https://kathware.com.ar/lau/)  
+- 📜 [Creative Commons BY-NC-SA 4.0](https://kathware.com.ar/normas-de-uso-y-licencias-de-kathware/)
 
----
-
-## 🔐 Licencias y ética
-
-Este proyecto está protegido por la:
-
-- [Licencia de Accesibilidad Universal (LAU) v1.1 - Español](https://kathware.com.ar/lau/)
-- [Licencia Creative Commons BY-NC-SA 4.0](https://kathware.com.ar/normas-de-uso-y-licencias-de-kathware/)
+> Todos los proyectos del ecosistema KathWare están protegidos por la LAU y por licencias libres no comerciales.
 
 ---
 
-## 🛠️ Cómo contribuir
+### 🔧 Funcionalidades principales
 
-Si encontrás errores o tenés sugerencias:
-
-1. Abrí un Issue en este repositorio.
-2. Completá el formulario accesible desde el panel de la extensión.
-3. Activá el envío de logs solo si lo deseás (se guardan en store.db localmente).
-
----
-
-## 🌐 Más sobre KathWare
-
-Visitá el sitio oficial: [https://kathware.com.ar](https://kathware.com.ar)  
-Accedé al ecosistema completo: [https://dragonmoon1522.github.io](https://dragonmoon1522.github.io)
+- Activación por atajo universal: `Ctrl + Shift + K`.
+- Panel accesible con selección de:
+  - Fuente: Subtítulo convencional (track) o visible (CC).
+  - Voz: Lectura por screen reader o sintetizador del sistema.
+- Auto detección de reproductores inaccesibles.
+- Lectura automática de subtítulos al ritmo del video.
+- Controles de velocidad, volumen, pausa, y navegación.
+- Compatibilidad con teclado, lector de pantalla y navegación asistida.
+- Panel de reporte accesible para que el usuario pueda informar errores o sugerencias.
 
 ---
 
-## 🗂️ Versiones
+### 🔧 Instalación de la extensión (modo desarrollador)
 
-Consultá el historial de versiones en `version.md`.
+#### En Google Chrome o Microsoft Edge:
+
+1. Descargá o cloná este repositorio.
+2. Abrí el navegador y accedé a: `chrome://extensions/`
+3. Activá la opción **"Modo de desarrollador"**.
+4. Seleccioná el botón **"Cargar sin comprimir"**.
+5. Indicá la carpeta donde se encuentra este repositorio.
+
+> 🛈 Si usás lector de pantalla, podés navegar por tabulaciones hasta el botón “Cargar sin comprimir”.
+
+---
+
+### 📬 Cómo contribuir o reportar errores
+
+Podés contribuir de las siguientes formas:
+
+- Enviando un **pull request** con mejoras o correcciones.
+- Abriendo un **Issue** en GitHub con la descripción del problema.
+- Usando el **formulario accesible integrado en la extensión** para enviar errores.
+- Activando la opción de **enviar logs de errores**, almacenados en `store.db` hasta que el usuario los remite.
+
+---
+
+### 🧾 Licencia de este proyecto
+
+Este proyecto está licenciado bajo:
+
+- [Licencia de Accesibilidad Universal (LAU) v1.1](https://kathware.com.ar/lau/)
+- [Creative Commons BY-NC-SA 4.0](https://kathware.com.ar/normas-de-uso-y-licencias-de-kathware/)
+
+---
+
+### 📜 Historial de versiones
+
+🔗 [📖 Consultar `version.md`](./version.md)
 
 ---
 
