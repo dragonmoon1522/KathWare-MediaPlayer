@@ -1,11 +1,11 @@
-## KathWare Media Player — Extensión accesible para subtítulos
+## KathWare Media Player
 
-📌 **Autora:** Katherine Vargas | [(KathWare)](https://kathware.com.ar)  
-📅 **Última actualización:** 2025-07-08  
+**Autora:** Katherine Vargas | [(KathWare)](https://kathware.com.ar)  
+**Última actualización:** 2025-07-08  
 
 ---
 
-### 📌 **Descripción del Proyecto**
+### **Descripción del Proyecto**
 
 **KathWare Media Player** es una extensión accesible para navegador que permite la lectura automática de subtítulos en plataformas de video, incluso cuando el reproductor no ofrece accesibilidad nativa (como ocurre en Flow, ok.ru, entre otras).
 
