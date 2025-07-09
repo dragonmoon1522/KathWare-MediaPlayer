@@ -20,7 +20,7 @@ Incluye:
 
 ---
 
-### 🛠️ Tecnologías utilizadas
+### Tecnologías utilizadas
 
 - HTML, CSS y JavaScript puro.
 - Sintetizador de voz (SpeechSynthesis API).
@@ -29,16 +29,16 @@ Incluye:
 
 ---
 
-### 📚 Licencias y manifiestos
+### Licencias y manifiestos
 
-- 🛡️ [Licencia de Accesibilidad Universal (LAU) — Español](https://kathware.com.ar/lau/)  
-- 📜 [Creative Commons BY-NC-SA 4.0](https://kathware.com.ar/normas-de-uso-y-licencias-de-kathware/)
+- 🛡[Licencia de Accesibilidad Universal (LAU) — Español](https://kathware.com.ar/lau/)  
+- [Creative Commons BY-NC-SA 4.0](https://kathware.com.ar/normas-de-uso-y-licencias-de-kathware/)
 
 > Todos los proyectos del ecosistema KathWare están protegidos por la LAU y por licencias libres no comerciales.
 
 ---
 
-### 🔧 Funcionalidades principales
+### Funcionalidades principales
 
 - Activación por atajo universal: `Ctrl + Shift + K`.
 - Panel accesible con selección de:
@@ -52,7 +52,7 @@ Incluye:
 
 ---
 
-### 🔧 Instalación de la extensión (modo desarrollador)
+### Instalación de la extensión (modo desarrollador)
 
 #### En Google Chrome o Microsoft Edge:
 
@@ -66,7 +66,7 @@ Incluye:
 
 ---
 
-### 📬 Cómo contribuir o reportar errores
+### Cómo contribuir o reportar errores
 
 Podés contribuir de las siguientes formas:
 
@@ -77,7 +77,7 @@ Podés contribuir de las siguientes formas:
 
 ---
 
-### 🧾 Licencia de este proyecto
+### Licencia de este proyecto
 
 Este proyecto está licenciado bajo:
 
@@ -86,9 +86,9 @@ Este proyecto está licenciado bajo:
 
 ---
 
-### 📜 Historial de versiones
+### Historial de versiones
 
-🔗 [📖 Consultar `version.md`](./version.md)
+🔗 [Consultar `version.md`](./version.md)
 
 ---
 
