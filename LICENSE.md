@@ -1,72 +1,29 @@
-# KathWare Media Player — Licencia
+# Licencia del Proyecto
 
-📌 Autora: Katherine Vargas  
-🔗 Sitio oficial: https://kathware.com.ar  
-📅 Última actualización: 2025-07-08  
+Este repositorio forma parte del ecosistema KathWare y está protegido por un conjunto de licencias que cubren diferentes tipos de contenido:
 
----
+## 1. Licencia de Accesibilidad Universal (LAU) — v1.1
 
-## 🛡️ Licencia dual aplicable
+Aplicable a la totalidad del proyecto (código, textos, interfaces, archivos y recursos) siempre que promueva la accesibilidad como principio ético.  
+Más información: [https://kathware.com.ar/lau/](https://kathware.com.ar/lau/)
 
-Este proyecto se publica bajo una **doble licencia**:
+## 2. GNU General Public License v3.0 (GPLv3)
 
----
+Aplica específicamente al **código fuente** presente en este repositorio.  
+Permite su uso, estudio, modificación y redistribución bajo condiciones de software libre.  
+Más información: [https://www.gnu.org/licenses/gpl-3.0.html](https://www.gnu.org/licenses/gpl-3.0.html)
 
-### 1. Licencia de Accesibilidad Universal (LAU) — Versión 1.1
+## 3. Creative Commons BY-NC-SA 4.0
 
-- Protege desarrollos accesibles creados por personas con discapacidad.
-- Garantiza el acceso libre y ético al software, sin uso comercial sin autorización explícita.
-- Requiere atribución a su autora original.
-- Prohíbe usos que contradigan los principios de accesibilidad, inclusión y reconocimiento.
+Aplica a los contenidos **textuales, imágenes, documentación, archivos .md, .json, .html estáticos y materiales multimedia** no funcionales.
 
-📄 Más información y versión completa:  
-[https://kathware.com.ar/lau/](https://kathware.com.ar/lau/)
+- Puedes compartir y adaptar el contenido.
+- No puedes usarlo con fines comerciales.
+- Debes dar crédito mencionando a *Katherine Vargas* y enlazando a este repositorio o a [KathWare](https://kathware.com.ar).
+- Las obras derivadas deben mantenerse bajo esta misma licencia.
 
----
-
-### 2. GNU General Public License v3.0 (GPLv3)
-
-- Permite el uso, estudio, distribución y modificación del software.
-- Garantiza que toda obra derivada conserve los derechos de libertad de los usuarios.
-- Compatible con proyectos internacionales de software libre.
-
-📄 Texto completo en inglés:  
-[https://www.gnu.org/licenses/gpl-3.0.html](https://www.gnu.org/licenses/gpl-3.0.html)
+Más información: [https://creativecommons.org/licenses/by-nc-sa/4.0/](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 
 ---
 
-## ⚖️ Aplicación de la doble licencia
-
-Podés elegir cualquiera de las dos licencias según el tipo de uso que desees:
-
-| Tipo de uso                                   | Licencia sugerida     |
-|----------------------------------------------|------------------------|
-| Proyectos accesibles o sin fines de lucro    | **LAU**                |
-| Integración con software libre internacional | **GPLv3**              |
-| Uso académico, institucional o comunitario   | **LAU**                |
-| Desarrollo de herramientas derivadas         | **GPLv3**              |
-
----
-
-## 🧾 Créditos y origen
-
-Este reproductor fue desarrollado por **Katherine Vargas** como parte del ecosistema [KathWare](https://kathware.com.ar), enfocado en la creación de tecnologías accesibles, libres y responsables.
-
-El código fuente puede ser reutilizado siempre que:
-
-- Se conserve esta nota de autoría.
-- Se mantenga el objetivo de promover el acceso digital inclusivo.
-- Se respeten los términos establecidos por **al menos una** de las licencias aquí declaradas.
-
----
-
-## ✉️ Contacto
-
-Para consultas, usos especiales o contribuciones:
-
-- Sitio oficial: [https://kathware.com.ar](https://kathware.com.ar)
-- Repositorio principal: [https://github.com/dragonmoon1522](https://github.com/dragonmoon1522)
-
----
-
-📌 Este archivo forma parte del repositorio `kathware-media-player` y puede actualizarse con nuevas versiones de licencias o anotaciones legales en el futuro.
+Este esquema de licencias busca asegurar el acceso libre, el reconocimiento justo y la preservación de los valores de accesibilidad en todo el ecosistema KathWare.
