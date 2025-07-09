@@ -89,6 +89,3 @@ Este proyecto está licenciado bajo:
 ### Historial de versiones
 
 🔗 [Consultar `version.md`](./version.md)
-
----
-
