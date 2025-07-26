@@ -1,16 +1,22 @@
 {
   "manifest_version": 3,
   "name": "KathWare Media Player",
-  "description": "Reproductor accesible con lector de subtítulos para plataformas multimedia. Compatible con lectores de pantalla y sintetizador de voz.",
-  "version": "1.0.0-beta",
-  "permissions": ["storage", "scripting", "activeTab"],
-  "host_permissions": ["<all_urls>"],
+  "version": "1.0.0",
+  "description": "Lee subtítulos automáticamente desde cualquier plataforma o archivo, con accesibilidad total.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
-      "16": "icon.png",
-      "48": "icon.png",
-      "128": "icon.png"
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
     }
   },
   "background": {
@@ -23,23 +29,18 @@
       "run_at": "document_idle"
     }
   ],
-  "icons": {
-    "16": "icon.png",
-    "48": "icon.png",
-    "128": "icon.png"
-  },
   "commands": {
-    "toggle-narrador": {
+    "toggle-kathware-player": {
       "suggested_key": {
-        "default": "Ctrl+Shift+K"
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
       },
-      "description": "Activa o desactiva el lector de subtítulos"
+      "description": "Activar/Desactivar KathWare Media Player"
     }
   },
-  "web_accessible_resources": [
-    {
-      "resources": ["icon.png"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
 }
