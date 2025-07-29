@@ -8,7 +8,25 @@ const modoNarrador = document.getElementById("modoNarrador");
 const fuenteSub = document.getElementById("fuenteSub");
 const trackSelector = document.getElementById("selectorTrack");
 const liveRegion = document.getElementById("sub-accesible");
-const video = document.getElementById("videoPlayer");
+let video = null;
+function detectarVideo() {
+  video = document.querySelector("video");
+  if (!video) {
+    const observer = new MutationObserver(() => {
+      const nuevoVideo = document.querySelector("video");
+      if (nuevoVideo) {
+        video = nuevoVideo;
+        observer.disconnect();
+        poblarSelectorTracks();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  } else {
+    poblarSelectorTracks();
+  }
+}
+detectarVideo();
+
 
 // Inicializar voz del sistema
 function cargarVoz() {
