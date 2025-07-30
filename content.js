@@ -1,5 +1,4 @@
 (function () {
-  // 💡 Config y estado
   let video = null;
   let trackSeleccionado = null;
   let voiceES = null;
@@ -8,12 +7,13 @@
   let usarTrack = true;
   let modoLector = false;
 
-  // 🎯 Crea UI si no existe (modo consola/bookmarklet)
+  // 🎯 Crear UI accesible si no existe
   function initUI() {
     if (!document.getElementById("sub-accesible-kathware")) {
       const liveRegion = document.createElement("div");
       liveRegion.id = "sub-accesible-kathware";
       liveRegion.setAttribute("aria-live", "polite");
+      liveRegion.setAttribute("data-kathware-ignore", "true");
       liveRegion.style.position = "absolute";
       liveRegion.style.left = "-9999px";
       document.body.appendChild(liveRegion);
@@ -25,6 +25,7 @@
       btn.id = id;
       btn.innerText = text;
       btn.setAttribute("aria-label", text);
+      btn.setAttribute("data-kathware-ignore", "true");
       Object.assign(btn.style, {
         position: "fixed",
         bottom,
@@ -42,9 +43,11 @@
     makeButton("kathwareToggle", "🎧 Narrador: ON", "1rem", "#222");
     makeButton("kathwareFuente", "📄 Fuente: TRACK", "4rem", "#444");
     makeButton("kathwareModo", "🦻 Modo: SINTETIZADOR", "7rem", "#555");
+
     if (!document.getElementById("kathwareSelector")) {
       const sel = document.createElement("select");
       sel.id = "kathwareSelector";
+      sel.setAttribute("data-kathware-ignore", "true");
       Object.assign(sel.style, {
         position: "fixed",
         bottom: "10rem",
@@ -60,7 +63,7 @@
     }
   }
 
-  // 🎤 Carga voz en español
+  // 🎤 Cargar voz
   function cargarVoz() {
     const voces = speechSynthesis.getVoices();
     voiceES = voces.find(v => v.lang.startsWith("es"));
@@ -70,7 +73,7 @@
   }
   cargarVoz();
 
-  // 🧠 Eventos de UI
+  // 🧠 Eventos UI
   function initEventosUI() {
     document.getElementById("kathwareToggle").onclick = () => {
       narradorActivo = !narradorActivo;
@@ -106,7 +109,7 @@
     };
   }
 
-  // 📡 Detectar <video>
+  // 📡 Detectar video
   function detectarVideo() {
     video = document.querySelector("video");
     if (!video) {
@@ -124,7 +127,7 @@
     }
   }
 
-  // 🎬 Detectar tracks y poblar selector
+  // 🎬 Pistas de subtítulo
   function poblarSelectorTracks() {
     const sel = document.getElementById("kathwareSelector");
     const pistas = Array.from(video.textTracks);
@@ -138,36 +141,37 @@
     }
   }
 
-  // 📖 Lectura por TRACK
+  // 📖 Lectura de subtítulos TRACK
   function iniciarLecturaTrack() {
     if (!trackSeleccionado) return;
     trackSeleccionado.oncuechange = () => {
       const cue = trackSeleccionado.activeCues?.[0];
-      if (!cue) return;
-      const texto = cue.text.trim();
-      if (texto && texto !== ultimoTexto) {
-        ultimoTexto = texto;
-        anunciarTexto(texto);
-      }
+      if (cue) anunciarTexto(cue.text.trim());
     };
   }
 
-  // 🔍 Lectura por subtítulos visibles
+  // 🔍 Lectura de subtítulos visuales
   setInterval(() => {
     if (!narradorActivo || usarTrack) return;
-    const visual = document.querySelector(
+
+    const visuales = Array.from(document.querySelectorAll(
       ".plyr__caption, .flirc-caption, [class*='caption'], [class*='cc'], [aria-label*='closed']"
-    );
-    const texto = visual?.textContent.trim();
-    if (texto && texto !== ultimoTexto) {
+    )).filter(el => !el.closest("[data-kathware-ignore]"));
+
+    const texto = visuales.find(v => v.textContent.trim())?.textContent.trim();
+
+    if (texto && texto !== ultimoTexto && texto.length > 5) {
       ultimoTexto = texto;
       anunciarTexto(texto);
     }
   }, 500);
 
-  // 📢 Anunciar texto
+  // 📢 Narrador: lector o sintetizador
   function anunciarTexto(texto) {
+    if (!texto || texto === ultimoTexto) return;
+    ultimoTexto = texto;
     const liveRegion = document.getElementById("sub-accesible-kathware");
+
     if (modoLector) {
       liveRegion.textContent = texto;
     } else if (voiceES) {
@@ -179,7 +183,7 @@
     }
   }
 
-  // 🚀 Lanzamiento
+  // 🚀 Iniciar todo
   initUI();
   initEventosUI();
   detectarVideo();
