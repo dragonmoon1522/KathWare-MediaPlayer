@@ -2,7 +2,6 @@ chrome.runtime.onInstalled.addListener(() => {
   console.log("[KathWare] Extensión instalada correctamente.");
 });
 
-// Listener para atajos de teclado
 chrome.commands.onCommand.addListener((command) => {
   if (command === "toggle_kathware_narrator") {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -13,10 +12,12 @@ chrome.commands.onCommand.addListener((command) => {
   }
 });
 
-// Servicio de escucha para acciones externas si hiciera falta
+// Escucha general
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "logEvent") {
     console.log("[KathWare Log]", request.payload);
+  } else if (request.action === "toggleKathwareOverlay") {
+    chrome.tabs.sendMessage(sender.tab.id, { action: "toggleKathwareOverlay" });
   }
   sendResponse({ status: "ok" });
 });

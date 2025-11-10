@@ -1,16 +1,20 @@
 {
   "manifest_version": 3,
   "name": "KathWare Media Player",
-  "version": "1.0.0",
-  "description": "Lee subtítulos automáticamente desde cualquier plataforma o archivo, con accesibilidad total.",
+  "description": "Extensión de accesibilidad para subtítulos en reproductores web.",
+  "version": "2.0.0",
+  "author": "Katherine Vargas (KathWare)",
   "permissions": [
-    "activeTab",
+    "storage",
     "scripting",
-    "storage"
+    "tabs"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "*://*/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -19,23 +23,19 @@
       "128": "icons/icon128.png"
     }
   },
-  "background": {
-    "service_worker": "background.js"
-  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["kathware-core.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
   "commands": {
-    "toggle-kathware-player": {
+    "toggle_kathware_narrator": {
       "suggested_key": {
-        "default": "Ctrl+Shift+K",
-        "mac": "Command+Shift+K"
+        "default": "Ctrl+Shift+K"
       },
-      "description": "Activar/Desactivar KathWare Media Player"
+      "description": "Activar o desactivar narrador de KathWare"
     }
   },
   "icons": {

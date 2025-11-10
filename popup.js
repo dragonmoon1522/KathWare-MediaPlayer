@@ -6,27 +6,38 @@ document.addEventListener("DOMContentLoaded", () => {
   const enviarReporte = document.getElementById("enviarReporte");
   const permitirEnvioLogs = document.getElementById("permitirEnvioLogs");
 
-  // Cargar valores guardados
+  // === Cargar valores guardados ===
   chrome.storage.local.get(["modoNarrador", "fuenteSub", "trackIndex"], (data) => {
     if (data.modoNarrador) modoNarrador.value = data.modoNarrador;
     if (data.fuenteSub) fuenteSub.value = data.fuenteSub;
     if (typeof data.trackIndex !== "undefined") selectorTrack.selectedIndex = data.trackIndex;
   });
 
-  // Guardar configuraciones
+  // === Guardar configuraciones + notificar al content.js ===
   modoNarrador.addEventListener("change", () => {
     chrome.storage.local.set({ modoNarrador: modoNarrador.value });
+    notificarCambio();
   });
 
   fuenteSub.addEventListener("change", () => {
     chrome.storage.local.set({ fuenteSub: fuenteSub.value });
+    notificarCambio();
   });
 
   selectorTrack.addEventListener("change", () => {
     chrome.storage.local.set({ trackIndex: selectorTrack.selectedIndex });
+    notificarCambio();
   });
 
-  // Enviar reporte de error
+  function notificarCambio() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs.length > 0 && tabs[0].id) {
+        chrome.tabs.sendMessage(tabs[0].id, { action: "updateSettings" });
+      }
+    });
+  }
+
+  // === Enviar reporte de error ===
   enviarReporte.addEventListener("click", () => {
     const mensaje = reporteError.value.trim();
 
@@ -52,7 +63,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   function enviarReporteFinal(reporte) {
-    // Por ahora lo guardamos en localStorage (simulación)
     chrome.storage.local.get("reportesEnviados", (data) => {
       const reportes = data.reportesEnviados || [];
       reportes.push(reporte);
@@ -62,7 +72,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Recibir lista de pistas desde el content script
+  // === Recibir lista de pistas desde content.js (opcional) ===
   chrome.runtime.sendMessage({ type: "getTracks" }, (response) => {
     if (response && response.tracks) {
       selectorTrack.innerHTML = "";
