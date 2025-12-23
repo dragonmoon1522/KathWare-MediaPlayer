@@ -1,17 +1,11 @@
 {
   "manifest_version": 3,
   "name": "KathWare Media Player",
-  "description": "Extensión de accesibilidad para subtítulos en reproductores web.",
+  "description": "Extensión de accesibilidad para lectura de subtítulos en reproductores web.",
   "version": "2.0.0",
   "author": "Katherine Vargas (KathWare)",
-  "permissions": [
-    "storage",
-    "scripting",
-    "tabs"
-  ],
-  "host_permissions": [
-    "*://*/*"
-  ],
+  "permissions": ["storage"],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
@@ -26,7 +20,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["kathware-core.js", "content.js"],
+      "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],
