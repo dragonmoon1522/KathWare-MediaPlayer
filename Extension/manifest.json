@@ -4,7 +4,7 @@
   "description": "Extensión de accesibilidad para lectura de subtítulos en reproductores web.",
   "version": "2.0.0",
   "author": "Katherine Vargas (KathWare)",
-  "permissions": ["storage"],
+  "permissions": ["storage", "tabs"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

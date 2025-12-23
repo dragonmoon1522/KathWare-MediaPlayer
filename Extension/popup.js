@@ -6,52 +6,58 @@ document.addEventListener("DOMContentLoaded", () => {
   const enviarReporte = document.getElementById("enviarReporte");
   const permitirEnvioLogs = document.getElementById("permitirEnvioLogs");
 
+  // === Helpers ===
+  function withActiveTab(cb) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs?.[0]?.id;
+      if (!tabId) return;
+      cb(tabId);
+    });
+  }
+
+  function notificarCambio() {
+    withActiveTab((tabId) => {
+      chrome.tabs.sendMessage(tabId, { action: "updateSettings" });
+    });
+  }
+
   // === Cargar valores guardados ===
   chrome.storage.local.get(["modoNarrador", "fuenteSub", "trackIndex"], (data) => {
     if (data.modoNarrador) modoNarrador.value = data.modoNarrador;
     if (data.fuenteSub) fuenteSub.value = data.fuenteSub;
-    if (typeof data.trackIndex !== "undefined") selectorTrack.selectedIndex = data.trackIndex;
+    if (typeof data.trackIndex !== "undefined") selectorTrack.value = String(data.trackIndex);
   });
 
   // === Guardar configuraciones + notificar al content.js ===
   modoNarrador.addEventListener("change", () => {
-    chrome.storage.local.set({ modoNarrador: modoNarrador.value });
-    notificarCambio();
+    chrome.storage.local.set({ modoNarrador: modoNarrador.value }, notificarCambio);
   });
 
   fuenteSub.addEventListener("change", () => {
-    chrome.storage.local.set({ fuenteSub: fuenteSub.value });
-    notificarCambio();
+    chrome.storage.local.set({ fuenteSub: fuenteSub.value }, notificarCambio);
   });
 
   selectorTrack.addEventListener("change", () => {
-    chrome.storage.local.set({ trackIndex: selectorTrack.selectedIndex });
-    notificarCambio();
-  });
-
-  function notificarCambio() {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs.length > 0 && tabs[0].id) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: "updateSettings" });
-      }
+    const idx = parseInt(selectorTrack.value, 10);
+    chrome.storage.local.set({ trackIndex: idx }, () => {
+      notificarCambio();
+      // opcional: setTrack inmediato (si lo implementás en content.js)
+      withActiveTab((tabId) => {
+        chrome.tabs.sendMessage(tabId, { action: "setTrack", index: idx });
+      });
     });
-  }
+  });
 
   // === Enviar reporte de error ===
   enviarReporte.addEventListener("click", () => {
-    const mensaje = reporteError.value.trim();
-
+    const mensaje = (reporteError.value || "").trim();
     if (!mensaje) {
       alert("Por favor, escribí una descripción del problema.");
       return;
     }
 
-    const reporte = {
-      mensaje,
-      fecha: new Date().toISOString(),
-    };
+    const reporte = { mensaje, fecha: new Date().toISOString() };
 
-    // Si el usuario permite el envío de logs, los recuperamos
     if (permitirEnvioLogs.checked) {
       chrome.storage.local.get("kathLogs", (data) => {
         reporte.logs = data.kathLogs || [];
@@ -66,28 +72,32 @@ document.addEventListener("DOMContentLoaded", () => {
     chrome.storage.local.get("reportesEnviados", (data) => {
       const reportes = data.reportesEnviados || [];
       reportes.push(reporte);
-      chrome.storage.local.set({ reportesEnviados: reportes });
-      alert("¡Gracias! Tu reporte fue guardado localmente.");
-      reporteError.value = "";
+      chrome.storage.local.set({ reportesEnviados: reportes }, () => {
+        alert("¡Gracias! Tu reporte fue guardado localmente.");
+        reporteError.value = "";
+      });
     });
   }
 
-  // === Recibir lista de pistas desde content.js (opcional) ===
-  chrome.runtime.sendMessage({ type: "getTracks" }, (response) => {
-    if (response && response.tracks) {
+  // === Obtener tracks desde content.js ===
+  withActiveTab((tabId) => {
+    chrome.tabs.sendMessage(tabId, { type: "getTracks" }, (response) => {
+      const tracks = response?.tracks || [];
       selectorTrack.innerHTML = "";
-      response.tracks.forEach((track, index) => {
+
+      tracks.forEach((track, index) => {
         const option = document.createElement("option");
-        option.value = index;
+        option.value = String(index);
         option.textContent = track.label || `Pista ${index + 1}`;
         selectorTrack.appendChild(option);
       });
 
       chrome.storage.local.get("trackIndex", (data) => {
-        if (typeof data.trackIndex !== "undefined") {
-          selectorTrack.selectedIndex = data.trackIndex;
+        const idx = (typeof data.trackIndex !== "undefined") ? String(data.trackIndex) : "0";
+        if (selectorTrack.querySelector(`option[value="${idx}"]`)) {
+          selectorTrack.value = idx;
         }
       });
-    }
+    });
   });
 });
