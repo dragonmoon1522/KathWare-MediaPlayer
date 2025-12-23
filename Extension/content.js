@@ -6,6 +6,7 @@
 // ====================================================
 
 // -------------------- Core (voz + lectura) --------------------
+let trackIndexGlobal = 0; // índice elegido desde el popup
 let voiceES = null;
 let liveRegion = null;
 let ultimoTexto = "";
@@ -86,8 +87,10 @@ function cargarConfigDesdeStorage(cb) {
       return;
     }
 
-    chrome.storage.local.get(["modoNarrador", "fuenteSub"], (data) => {
+chrome.storage.local.get(["modoNarrador", "fuenteSub", "trackIndex"], (data) => {
+
       if (data?.modoNarrador) modoNarradorGlobal = data.modoNarrador;
+      if (typeof data?.trackIndex !== "undefined") trackIndexGlobal = Number(data.trackIndex) || 0;
       if (data?.fuenteSub) fuenteSubGlobal = data.fuenteSub;
       cb && cb();
     });
@@ -231,7 +234,9 @@ function iniciarLecturaSubtitulos(video) {
   cargarVozES();
 
   // Usar primera pista (luego lo refinamos con selectorTrack)
-  trackLectura = video.textTracks[0];
+const idx = Math.max(0, Math.min(trackIndexGlobal, video.textTracks.length - 1));
+trackLectura = video.textTracks[idx];
+
   trackLectura.mode = "hidden";
 
   trackLectura.oncuechange = () => {
@@ -316,6 +321,36 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.onMessage) {
       sendResponse && sendResponse({ status: "ok" });
       return true;
     }
+if (message?.action === "setTrack") {
+  const video = document.querySelector("video");
+  const idx = Number(message.index);
+
+  if (video?.textTracks && Number.isFinite(idx) && idx >= 0 && idx < video.textTracks.length) {
+    trackIndexGlobal = idx;
+
+    // Si estamos en modo TRACK y la extensión está activa, cambiamos de pista en caliente
+    if (extensionActiva) {
+      // apagar track anterior
+      if (trackLectura) trackLectura.oncuechange = null;
+
+      // activar el nuevo
+      trackLectura = video.textTracks[trackIndexGlobal];
+      trackLectura.mode = "hidden";
+
+      trackLectura.oncuechange = () => {
+        if (fuenteSubGlobal !== "track") return;
+        const cue = trackLectura.activeCues && trackLectura.activeCues[0];
+        if (cue) leerTextoAccesible(cue.text || "", modoNarradorGlobal);
+      };
+    }
+
+    sendResponse && sendResponse({ status: "ok" });
+    return true;
+  }
+
+  sendResponse && sendResponse({ status: "ignored" });
+  return true;
+}
 
     if (message?.type === "getTracks") {
       const video = document.querySelector("video");
