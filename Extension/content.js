@@ -1,18 +1,20 @@
 // ====================================================
 // KathWare Media Player - Content Script (MV3)
 // - Overlay SOLO para Flow / reproductores no accesibles
-// - Lectura TRACK para plataformas HTML5 accesibles
+// - Lectura TRACK cuando existan textTracks
 // - Fallback visual si el usuario elige "visual"
+// - Selector de pista desde popup (trackIndex) + setTrack
+// - En Flow/no accesibles: SI hay subtítulos detectables, también los lee
 // ====================================================
 
 // -------------------- Core (voz + lectura) --------------------
-let trackIndexGlobal = 0; // índice elegido desde el popup
 let voiceES = null;
 let liveRegion = null;
 let ultimoTexto = "";
 
 let modoNarradorGlobal = "sintetizador"; // "off" | "sintetizador" | "lector"
 let fuenteSubGlobal = "track";           // "track" | "visual"
+let trackIndexGlobal = 0;                // índice elegido desde popup
 
 function cargarVozES() {
   try {
@@ -87,11 +89,15 @@ function cargarConfigDesdeStorage(cb) {
       return;
     }
 
-chrome.storage.local.get(["modoNarrador", "fuenteSub", "trackIndex"], (data) => {
-
+    chrome.storage.local.get(["modoNarrador", "fuenteSub", "trackIndex"], (data) => {
       if (data?.modoNarrador) modoNarradorGlobal = data.modoNarrador;
-      if (typeof data?.trackIndex !== "undefined") trackIndexGlobal = Number(data.trackIndex) || 0;
       if (data?.fuenteSub) fuenteSubGlobal = data.fuenteSub;
+
+      if (typeof data?.trackIndex !== "undefined") {
+        const n = Number(data.trackIndex);
+        trackIndexGlobal = Number.isFinite(n) ? n : 0;
+      }
+
       cb && cb();
     });
   } catch (_) {
@@ -99,9 +105,25 @@ chrome.storage.local.get(["modoNarrador", "fuenteSub", "trackIndex"], (data) => 
   }
 }
 
+// -------------------- Utilidad: obtener video "mejor candidato" --------------------
+function getMainVideo() {
+  const videos = Array.from(document.querySelectorAll("video"));
+  if (!videos.length) return null;
+
+  // Preferimos el que tenga textTracks o el que esté reproduciendo
+  const conTracks = videos.find(v => v.textTracks && v.textTracks.length > 0);
+  if (conTracks) return conTracks;
+
+  const playing = videos.find(v => !v.paused && !v.ended);
+  if (playing) return playing;
+
+  // Fallback: el primero
+  return videos[0];
+}
+
 // -------------------- Detección de reproductor --------------------
 function detectarTipoReproductor() {
-  const video = document.querySelector("video");
+  const video = getMainVideo();
   if (!video) return "ninguno";
 
   const dominio = location.hostname.toLowerCase();
@@ -118,6 +140,7 @@ function detectarTipoReproductor() {
     "starplus"
   ];
 
+  // Flow u otros DRM sin controles accesibles
   const esFlow =
     dominio.includes("flow.com.ar") ||
     (video.src && video.src.startsWith("blob:") && !video.hasAttribute("controls"));
@@ -150,7 +173,8 @@ function toggleExtension() {
 
 function iniciarModoDetectado() {
   const tipo = detectarTipoReproductor();
-  const video = document.querySelector("video");
+  const video = getMainVideo();
+
   if (!video) {
     console.warn("[KathWare] No se encontró ningún <video> en la página.");
     return;
@@ -158,9 +182,33 @@ function iniciarModoDetectado() {
 
   console.log("[KathWare] Tipo detectado:", tipo);
 
-  if (tipo === "flow") return iniciarOverlay(video);
-  if (tipo === "lector") return iniciarLecturaSubtitulos(video);
-  if (tipo === "visual") return iniciarLecturaVisual();
+  // Regla: overlay SOLO si es flow/no accesible
+  if (tipo === "flow") {
+    iniciarOverlay(video); // overlay controles
+    // pero igual intentamos lectura, por si hay tracks o captions detectables
+    if (video.textTracks && video.textTracks.length > 0) {
+      iniciarLecturaSubtitulos(video);
+    } else if (fuenteSubGlobal === "visual") {
+      iniciarLecturaVisual();
+    }
+    return;
+  }
+
+  // Plataformas accesibles / normales:
+  if (tipo === "lector") {
+    iniciarLecturaSubtitulos(video);
+    // si el user elige visual, igual activamos visual
+    if (fuenteSubGlobal === "visual") iniciarLecturaVisual();
+    return;
+  }
+
+  // visual
+  if (tipo === "visual") {
+    iniciarLecturaVisual();
+    // y si existieran tracks, también
+    if (video.textTracks && video.textTracks.length > 0) iniciarLecturaSubtitulos(video);
+    return;
+  }
 }
 
 // -------------------- Overlay SOLO Flow --------------------
@@ -187,7 +235,7 @@ function iniciarOverlay(video) {
   });
 
   cont.innerHTML = `
-    <div style="margin-bottom:0.5rem;"><strong>KathWare Media Player (Flow)</strong></div>
+    <div style="margin-bottom:0.5rem;"><strong>KathWare Media Player (Overlay)</strong></div>
     <button id="kw-play">Reproducir</button>
     <button id="kw-pause">Pausar</button>
     <button id="kw-back">-10s</button>
@@ -221,22 +269,25 @@ function iniciarOverlay(video) {
     modoNarradorGlobal = sel.value;
   });
 
-  console.log("[KathWare] Overlay activado (Flow).");
+  console.log("[KathWare] Overlay activado (Flow/no accesible).");
 }
 
 // -------------------- TRACK --------------------
 function iniciarLecturaSubtitulos(video) {
-  if (!video.textTracks || !video.textTracks.length) {
+  if (!video?.textTracks || !video.textTracks.length) {
     console.warn("[KathWare] No hay textTracks disponibles.");
     return;
   }
 
   cargarVozES();
 
-  // Usar primera pista (luego lo refinamos con selectorTrack)
-const idx = Math.max(0, Math.min(trackIndexGlobal, video.textTracks.length - 1));
-trackLectura = video.textTracks[idx];
+  // elegimos el índice guardado (clamp)
+  const idx = Math.max(0, Math.min(trackIndexGlobal, video.textTracks.length - 1));
 
+  // apagar track anterior
+  if (trackLectura) trackLectura.oncuechange = null;
+
+  trackLectura = video.textTracks[idx];
   trackLectura.mode = "hidden";
 
   trackLectura.oncuechange = () => {
@@ -246,7 +297,7 @@ trackLectura = video.textTracks[idx];
     leerTextoAccesible(cue.text || "", modoNarradorGlobal);
   };
 
-  console.log("[KathWare] Lectura TRACK activa.");
+  console.log(`[KathWare] Lectura TRACK activa (pista ${idx}).`);
 }
 
 // -------------------- Visual fallback --------------------
@@ -258,9 +309,11 @@ function iniciarLecturaVisual() {
     if (modoNarradorGlobal === "off") return;
     if (fuenteSubGlobal !== "visual") return;
 
+    // candidatos comunes (genéricos)
     const visual = document.querySelector(
-      ".plyr__caption, .flirc-caption, [class*='caption'], [class*='cc'], [aria-label*='closed']"
+      ".plyr__caption, .flirc-caption, [class*='caption'], [class*='cc'], [class*='subtitle'], [aria-label*='closed'], [aria-label*='caption']"
     );
+
     const texto = visual?.textContent?.trim();
     if (texto) leerTextoAccesible(texto, modoNarradorGlobal);
   }, 800);
@@ -275,7 +328,8 @@ function cerrarOverlay() {
     overlayElement.remove();
     overlayElement = null;
   }
-  detenerLectura();
+  // Ojo: NO llamamos detenerLectura acá si querés seguir leyendo subtítulos sin overlay.
+  // Pero en esta extensión, cerrar overlay suele implicar "apagado" del overlay, no del narrador.
 }
 
 function limpiarTodo() {
@@ -302,58 +356,57 @@ document.addEventListener("keydown", e => {
 // -------------------- Mensajes (background/popup) --------------------
 if (typeof chrome !== "undefined" && chrome?.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Toggle
     if (message?.action === "toggleNarrator") {
       toggleExtension();
       sendResponse && sendResponse({ status: "ok" });
       return true;
     }
 
+    // Cambio de pista directo desde popup
+    if (message?.action === "setTrack") {
+      const video = getMainVideo();
+      const idx = Number(message.index);
+
+      if (video?.textTracks && Number.isFinite(idx) && idx >= 0 && idx < video.textTracks.length) {
+        trackIndexGlobal = idx;
+
+        // si está activa, aplicamos inmediato
+        if (extensionActiva) {
+          iniciarLecturaSubtitulos(video);
+        }
+
+        sendResponse && sendResponse({ status: "ok" });
+        return true;
+      }
+
+      sendResponse && sendResponse({ status: "ignored" });
+      return true;
+    }
+
+    // Settings actualizados (modo narrador, fuente, trackIndex)
     if (message?.action === "updateSettings") {
       cargarConfigDesdeStorage(() => {
-        console.log("[KathWare] Settings actualizados:", { modoNarradorGlobal, fuenteSubGlobal });
+        console.log("[KathWare] Settings actualizados:", {
+          modoNarradorGlobal,
+          fuenteSubGlobal,
+          trackIndexGlobal
+        });
 
-        // Si está activa, re-inicia el modo para aplicar cambios (importante)
+        // Si está activa, re-inicia el modo para aplicar cambios
         if (extensionActiva) {
           limpiarTodo();
           iniciarModoDetectado();
         }
       });
+
       sendResponse && sendResponse({ status: "ok" });
       return true;
     }
-if (message?.action === "setTrack") {
-  const video = document.querySelector("video");
-  const idx = Number(message.index);
 
-  if (video?.textTracks && Number.isFinite(idx) && idx >= 0 && idx < video.textTracks.length) {
-    trackIndexGlobal = idx;
-
-    // Si estamos en modo TRACK y la extensión está activa, cambiamos de pista en caliente
-    if (extensionActiva) {
-      // apagar track anterior
-      if (trackLectura) trackLectura.oncuechange = null;
-
-      // activar el nuevo
-      trackLectura = video.textTracks[trackIndexGlobal];
-      trackLectura.mode = "hidden";
-
-      trackLectura.oncuechange = () => {
-        if (fuenteSubGlobal !== "track") return;
-        const cue = trackLectura.activeCues && trackLectura.activeCues[0];
-        if (cue) leerTextoAccesible(cue.text || "", modoNarradorGlobal);
-      };
-    }
-
-    sendResponse && sendResponse({ status: "ok" });
-    return true;
-  }
-
-  sendResponse && sendResponse({ status: "ignored" });
-  return true;
-}
-
+    // Lista de pistas para el popup
     if (message?.type === "getTracks") {
-      const video = document.querySelector("video");
+      const video = getMainVideo();
       const tracks = video?.textTracks
         ? Array.from(video.textTracks).map(t => ({
             label: t.label || t.language || "Pista",
