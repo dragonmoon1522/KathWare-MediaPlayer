@@ -140,24 +140,18 @@ function detectarTipoReproductor() {
     "starplus"
   ];
 
-  // Flow u otros DRM sin controles accesibles
-  const esFlow =
-    dominio.includes("flow.com.ar") ||
-    (video.src && video.src.startsWith("blob:") && !video.hasAttribute("controls"));
-
-  if (esFlow) return "flow";
-
-  // En plataformas conocidas accesibles: por defecto TRACK (o visual si lo eligió)
-  if (dominiosAccesibles.some(d => dominio.includes(d))) {
-    return fuenteSubGlobal === "visual" ? "visual" : "lector";
-  }
-
-  // Si hay textTracks, TRACK
-  if (video.textTracks && video.textTracks.length > 0) return "lector";
-
-  // Fallback visual
-  return "visual";
+  // 1) Plataformas conocidas accesibles: NO clasificar como flow aunque sea blob y sin controls
+if (dominiosAccesibles.some(d => dominio.includes(d))) {
+  return fuenteSubGlobal === "visual" ? "visual" : "lector";
 }
+
+// 2) Flow u otros DRM sin controles accesibles (heurística)
+const esFlow =
+  dominio.includes("flow.com.ar") ||
+  (video.src && video.src.startsWith("blob:") && !video.hasAttribute("controls"));
+
+if (esFlow) return "flow";
+
 
 // -------------------- Toggle / inicio --------------------
 function toggleExtension() {
