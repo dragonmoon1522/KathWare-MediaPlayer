@@ -1,11 +1,9 @@
 // ====================================================
-// KathWare Media Player - Content Script (MV3) - v2.0.0 (estable)
+// KathWare Media Player - Content Script (MV3) - v2.0.0 (plataformas)
 // - Overlay SOLO para Flow / reproductores no accesibles
 // - TRACK: lee textTracks cuando existen
-// - VISUAL: lee subtítulos desde DOM (selectores + auto-detección por comportamiento)
-// - MAX: nodos re-render -> re-selección dinámica por tick (solo Max)
-// - Disney/otros: target más estable (evita enganchar UI/aria-live random)
-// - a11y: live region aria-live polite / role alert (modo lector)
+// - VISUAL: lee subtítulos por selectores POR PLATAFORMA
+// - Notificación ON/OFF por Ctrl+Shift+K (toast + aria-live)
 // ====================================================
 
 (() => {
@@ -13,7 +11,7 @@
   window.__KATHWARE_MEDIA_PLAYER__ = { loadedAt: Date.now() };
   console.log("[KathWare] content.js cargado en", location.hostname);
 
-  // -------------------- Core (voz + lectura) --------------------
+  // -------------------- Core voz + lectura --------------------
   let voiceES = null;
   let liveRegion = null;
   let ultimoTexto = "";
@@ -28,7 +26,7 @@
       const voces = speechSynthesis.getVoices();
       voiceES = (voces || []).find(v => v.lang && v.lang.startsWith("es")) || null;
 
-      if (!voiceES && typeof speechSynthesis !== "undefined") {
+      if (!voiceES) {
         speechSynthesis.onvoiceschanged = () => {
           const voces2 = speechSynthesis.getVoices();
           voiceES = (voces2 || []).find(v => v.lang && v.lang.startsWith("es")) || null;
@@ -39,10 +37,7 @@
   cargarVozES();
 
   function normalizarTexto(t) {
-    return String(t || "")
-      .replace(/<[^>]+>/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
+    return String(t || "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
   }
 
   function asegurarLiveRegion() {
@@ -66,10 +61,7 @@
 
     if (modo === "lector") {
       asegurarLiveRegion().textContent = texto;
-      return;
-    }
-
-    if (modo === "sintetizador" && voiceES && typeof speechSynthesis !== "undefined") {
+    } else if (modo === "sintetizador" && voiceES && typeof speechSynthesis !== "undefined") {
       try {
         const utter = new SpeechSynthesisUtterance(texto);
         utter.voice = voiceES;
@@ -81,20 +73,54 @@
   }
 
   function detenerLectura() {
-    try {
-      if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
-    } catch (_) {}
-    if (liveRegion) {
-      liveRegion.remove();
-      liveRegion = null;
-    }
+    try { if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel(); } catch (_) {}
+    if (liveRegion) { liveRegion.remove(); liveRegion = null; }
     ultimoTexto = "";
   }
 
-  // -------------------- Estado --------------------
+  // -------------------- Notificaciones (toast + a11y) --------------------
+  let toastEl = null;
+  let toastTimer = null;
+
+  function notify(msg) {
+    // a11y
+    asegurarLiveRegion().textContent = msg;
+
+    // visual toast
+    try {
+      if (!toastEl) {
+        toastEl = document.createElement("div");
+        toastEl.id = "kw-toast";
+        toastEl.setAttribute("role", "status");
+        toastEl.setAttribute("aria-live", "polite");
+        Object.assign(toastEl.style, {
+          position: "fixed",
+          top: "1rem",
+          right: "1rem",
+          background: "rgba(0,0,0,0.85)",
+          color: "#fff",
+          padding: "0.75rem 1rem",
+          borderRadius: "10px",
+          zIndex: "999999",
+          fontSize: "14px",
+          maxWidth: "70vw",
+          boxShadow: "0 8px 30px rgba(0,0,0,0.35)"
+        });
+        document.body.appendChild(toastEl);
+      }
+      toastEl.textContent = msg;
+
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        if (toastEl) toastEl.textContent = "";
+      }, 2000);
+    } catch (_) {}
+  }
+
+  // -------------------- Estado extensión --------------------
   let extensionActiva = false;
 
-  // Overlay
+  // Overlay (Flow)
   let overlayActivo = false;
   let overlayElement = null;
 
@@ -103,10 +129,9 @@
 
   // Visual
   let visualInterval = null;
-  let visualObserver = null;
   let visualTarget = null;
 
-  // -------------------- Storage --------------------
+  // -------------------- Storage (settings) --------------------
   function cargarConfigDesdeStorage(cb) {
     try {
       if (typeof chrome === "undefined" || !chrome?.storage?.local) {
@@ -144,41 +169,53 @@
     return videos[0];
   }
 
-  // -------------------- Detección de tipo --------------------
+  // -------------------- Plataforma --------------------
+  function getPlatform() {
+    const h = location.hostname.toLowerCase();
+    if (h.includes("netflix")) return "netflix";
+    if (h.includes("disneyplus") || h.includes("disney")) return "disney";
+    if (h.includes("hbomax") || h.includes("max.com") || h.includes("play.hbomax.com")) return "max";
+    if (h.includes("youtube")) return "youtube";
+    if (h.includes("primevideo") || h.includes("amazon")) return "prime";
+    if (h.includes("paramountplus")) return "paramount";
+    if (h.includes("flow.com.ar")) return "flow";
+    return "generic";
+  }
+
+  function platformLabel(p) {
+    return ({
+      netflix: "Netflix",
+      disney: "Disney+",
+      max: "Max",
+      youtube: "YouTube",
+      prime: "Prime Video",
+      paramount: "Paramount+",
+      flow: "Flow",
+      generic: "Sitio"
+    })[p] || "Sitio";
+  }
+
+  // -------------------- Detección de modo --------------------
   function detectarTipoReproductor() {
     const v = getMainVideo();
     if (!v) return "ninguno";
 
-    const dominio = location.hostname.toLowerCase();
+    const p = getPlatform();
 
-    const dominiosAccesibles = [
-      "netflix",
-      "disneyplus",
-      "disney",
-      "primevideo",
-      "amazon",
-      "youtube",
-      "paramountplus",
-      "hbomax",
-      "max.com",
-      "starplus"
-    ];
+    // Flow: overlay
+    if (p === "flow") return "flow";
 
-    if (dominiosAccesibles.some(d => dominio.includes(d))) {
-      return fuenteSubGlobal === "visual" ? "visual" : "lector";
-    }
+    // Preferencia del usuario
+    if (fuenteSubGlobal === "visual") return "visual";
 
-    const esFlow =
-      dominio.includes("flow.com.ar") ||
-      (v.src && v.src.startsWith("blob:") && !v.hasAttribute("controls"));
-
-    if (esFlow) return "flow";
-
+    // TRACK si hay
     if (v.textTracks && v.textTracks.length > 0) return "lector";
+
+    // Sino visual
     return "visual";
   }
 
-  // -------------------- Overlay (solo Flow) --------------------
+  // -------------------- Overlay SOLO Flow --------------------
   function iniciarOverlay(video) {
     if (overlayActivo) return;
     overlayActivo = true;
@@ -239,7 +276,7 @@
   }
 
   // -------------------- TRACK --------------------
-  function iniciarLecturaSubtitulos(video) {
+  function iniciarLecturaTrack(video) {
     if (!video?.textTracks || !video.textTracks.length) {
       console.warn("[KathWare] No hay textTracks disponibles.");
       return false;
@@ -264,7 +301,7 @@
     return true;
   }
 
-  // -------------------- Visual: filtros --------------------
+  // -------------------- Visual por plataforma --------------------
   function looksLikeNoise(node, text) {
     const t = normalizarTexto(text);
     if (!t) return true;
@@ -275,133 +312,84 @@
 
     if (t.length < 2 || t.length > 220) return true;
 
-    try {
-      const r = node.getBoundingClientRect?.();
-      if (r) {
-        if (r.height > window.innerHeight * 0.35) return true;
-        if (r.width > window.innerWidth * 0.95 && r.height > 80) return true;
-      }
-    } catch {}
-
     const cls = ((node?.className || "") + " " + (node?.id || "")).toLowerCase();
     if (/toast|snack|tooltip|popover|modal|dialog|notif|banner|sr-only|screenreader-only/.test(cls)) return true;
     if (/me gusta|like|compart|share|guardad|saved|coment|comment|suscrib|subscribe/i.test(t)) return true;
-    if (/^\d+([:.]\d+)*$/.test(t)) return true;
 
     return false;
   }
 
-  function elegirTargetVisualRapido() {
-    // Prioridad por plataformas (pero no dependemos de esto)
-    let t =
-      document.querySelector("[data-testid='cueBoxRowTextCue']") ||   // Max
-      document.querySelector(".playkit-subtitles") ||                 // Playkit/Kaltura
-      document.querySelector(
-        ".plyr__caption, .flirc-caption, [class*='caption'], [class*='subtitle'], [class*='subtitles'], [class*='cc']," +
-        " [class*='cue'], [class*='texttrack'], [class*='timed'], [class*='ttml']," +
-        " [aria-label*='closed'], [aria-label*='caption'], [aria-label*='subt'], [aria-live='polite'], [aria-live='assertive'], [role='status']"
-      );
-
-    if (!t) return null;
-    const txt = normalizarTexto(t.textContent);
-    if (looksLikeNoise(t, txt)) return null;
-    return t;
+  function platformSelectors(p) {
+    // 👇 Acá está la “verdad” por plataforma (podés ir ampliándola)
+    if (p === "max") {
+      return [
+        "[data-testid='cueBoxRowTextCue']",
+        "[data-testid*='cueBoxRowTextCue']",
+        "[class*='TextCue']"
+      ];
+    }
+    if (p === "netflix") {
+      return [
+        ".player-timedtext-text-container",
+        ".player-timedtext",
+        "span.player-timedtext-text",
+        "div[data-uia*='subtitle']",
+        "div[data-uia*='captions']"
+      ];
+    }
+    if (p === "disney") {
+      // Disney es cambiante: ponemos varios “probables”
+      return [
+        "[class*='subtitle']",
+        "[class*='subtitles']",
+        "[class*='caption']",
+        "[class*='captions']",
+        "[class*='timedText']",
+        "[class*='timed-text']",
+        "[data-testid*='subtitle']",
+        "[data-testid*='caption']",
+        "[aria-label*='Subt']",
+        // último recurso: aria-live pero filtrado por texto
+        "[aria-live='polite']",
+        "[role='status']"
+      ];
+    }
+    if (p === "youtube") {
+      return [
+        ".ytp-caption-segment",
+        ".captions-text .caption-visual-line",
+        ".ytp-caption-window-container"
+      ];
+    }
+    // genérico
+    return [
+      ".plyr__caption",
+      ".flirc-caption",
+      "[class*='subtitle']",
+      "[class*='caption']",
+      "[class*='cc']",
+      "[aria-live='polite']",
+      "[role='status']"
+    ];
   }
 
-  // Auto-detección por comportamiento (cuando no sabemos el selector)
-  function detectarNodoSubtitulosAuto(video, opts = {}) {
-    const cfg = { scanMs: opts.scanMs ?? 3500, maxNodes: opts.maxNodes ?? 450 };
-    const now = () => performance.now();
-
-    const videoRect = video?.getBoundingClientRect?.();
-    const nodes = Array.from(document.querySelectorAll("div,span,p")).slice(0, cfg.maxNodes);
-    const stats = new Map();
-    let lastVideoTime = video?.currentTime ?? 0;
-
-    function isVisible(n) {
-      const r = n.getBoundingClientRect?.();
-      if (!r || r.width <= 0 || r.height <= 0) return false;
-      const st = getComputedStyle(n);
-      if (st.display === "none" || st.visibility === "hidden" || st.opacity === "0") return false;
-      return true;
+  function pickBestNodeFromSelectors(selectors) {
+    const nodes = [];
+    for (const sel of selectors) {
+      try {
+        document.querySelectorAll(sel).forEach(n => nodes.push(n));
+      } catch (_) {}
     }
+    if (!nodes.length) return null;
 
-    function isNearVideoStrict(n) {
-      if (!videoRect) return false;
-      const r = n.getBoundingClientRect?.();
-      if (!r) return false;
-
-      const xInside =
-        r.left < videoRect.right + 20 &&
-        r.right > videoRect.left - 20;
-
-      if (!xInside) return false;
-
-      const withinVideo = r.top < videoRect.bottom && r.bottom > videoRect.top;
-      const justBelow = r.top >= videoRect.bottom - 10 && r.top <= videoRect.bottom + 170;
-
-      if (!(withinVideo || justBelow)) return false;
-
-      const centerX = (r.left + r.right) / 2;
-      const videoCenterX = (videoRect.left + videoRect.right) / 2;
-      const centered = Math.abs(centerX - videoCenterX) <= (videoRect.width * 0.45);
-
-      return centered;
+    // Preferir el último “cue-like” (muchos players apilan/recrean nodos)
+    // pero filtrando ruido.
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      const t = normalizarTexto(n?.textContent);
+      if (!looksLikeNoise(n, t)) return n;
     }
-
-    const mo = new MutationObserver(() => {
-      // solo queremos muestras cuando avanza el video
-      const vt = video.currentTime ?? 0;
-      const advancing = vt > lastVideoTime + 0.05;
-      lastVideoTime = vt;
-      if (!advancing) return;
-
-      for (const n of nodes) {
-        if (!isVisible(n)) continue;
-        if (!isNearVideoStrict(n)) continue;
-
-        const t = normalizarTexto(n.textContent);
-        if (looksLikeNoise(n, t)) continue;
-
-        const s = stats.get(n) || { last: "", changes: 0, lenSum: 0, lastChangeT: 0, dtSum: 0 };
-
-        if (t && t !== s.last) {
-          const tNow = now();
-          if (s.lastChangeT) s.dtSum += (tNow - s.lastChangeT);
-          s.lastChangeT = tNow;
-          s.last = t;
-          s.changes += 1;
-          s.lenSum += t.length;
-        }
-
-        stats.set(n, s);
-      }
-    });
-
-    mo.observe(document.body, { subtree: true, childList: true, characterData: true });
-
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        try { mo.disconnect(); } catch {}
-
-        const ranked = [];
-        for (const [n, s] of stats.entries()) {
-          if (s.changes < 2) continue;
-          const avgLen = s.lenSum / s.changes;
-          const avgDt = s.changes > 1 ? (s.dtSum / (s.changes - 1)) : 999999;
-
-          const dtOk = avgDt >= 250 && avgDt <= 8000;
-          const lenOk = avgLen >= 5 && avgLen <= 120;
-          if (!dtOk || !lenOk) continue;
-
-          const score = Math.min(10, s.changes) * 10 + 60; // base alto porque ya pasó filtros estrictos
-          ranked.push({ n, score });
-        }
-
-        ranked.sort((a, b) => b.score - a.score);
-        resolve(ranked[0]?.n || null);
-      }, cfg.scanMs);
-    });
+    return null;
   }
 
   function limpiarVisual() {
@@ -409,78 +397,37 @@
       clearInterval(visualInterval);
       visualInterval = null;
     }
-    if (visualObserver) {
-      try { visualObserver.disconnect(); } catch (_) {}
-      visualObserver = null;
-    }
     visualTarget = null;
   }
 
-  // -------------------- VISUAL (estable) --------------------
-  async function iniciarLecturaVisual(forzar = false) {
+  function iniciarLecturaVisualPorPlataforma() {
     cargarVozES();
     limpiarVisual();
 
-    if (modoNarradorGlobal === "off") return;
-    if (!forzar && fuenteSubGlobal !== "visual") return;
+    const p = getPlatform();
+    const sels = platformSelectors(p);
 
-    const video = getMainVideo(); // ✅ FIX: siempre definido acá
-    if (!video) {
-      console.warn("[KathWare] Visual: no hay <video> para asociar.");
-      return;
-    }
-
-    // 1) rápido
-    visualTarget = elegirTargetVisualRapido();
-
-    // 2) auto si no encontramos
-    if (!visualTarget) {
-      visualTarget = await detectarNodoSubtitulosAuto(video, { scanMs: 3500 });
-    }
-
-    if (!visualTarget) {
-      console.warn("[KathWare] Visual: no pude detectar un nodo de subtítulos en este documento.");
-      return;
-    }
-
-    const esMax = /play\.hbomax\.com|max\.com|hbomax/.test(location.hostname.toLowerCase());
-
-    const leerTick = () => {
+    const tick = () => {
       if (modoNarradorGlobal === "off") return;
 
-      let node = visualTarget;
+      // re-selección controlada (solo selectores de la plataforma)
+      visualTarget = pickBestNodeFromSelectors(sels) || visualTarget;
+      if (!visualTarget) return;
 
-      // ✅ SOLO Max: re-selección dinámica por tick
-      if (esMax) {
-        const all = document.querySelectorAll("[data-testid='cueBoxRowTextCue']");
-        if (all && all.length) node = all[all.length - 1];
-      } else {
-        // ✅ Disney/otros: si el nodo murió, revalidar suave
-        if (!node || !document.contains(node)) {
-          node = elegirTargetVisualRapido() || node;
-          visualTarget = node || visualTarget;
-        }
-      }
-
-      if (!node) return;
-
-      const texto = normalizarTexto(node.textContent);
-      if (!looksLikeNoise(node, texto) && texto.length > 1) {
+      const texto = normalizarTexto(visualTarget.textContent);
+      if (!looksLikeNoise(visualTarget, texto) && texto.length > 1) {
         leerTextoAccesible(texto, modoNarradorGlobal);
       }
     };
 
-    // Observamos el body para reaccionar a re-renders (sin casarnos con un solo nodo)
-    visualObserver = new MutationObserver(() => leerTick());
-    visualObserver.observe(document.body, { subtree: true, childList: true, characterData: true });
+    // Poll. Disney a veces necesita más frecuencia porque re-renderiza fuerte.
+    const pMs = (p === "disney" || p === "max" || p === "netflix") ? 350 : 650;
+    visualInterval = setInterval(tick, pMs);
 
-    // Poll backup (Max más rápido)
-    visualInterval = setInterval(leerTick, esMax ? 350 : 650);
-
-    console.log("[KathWare] Lectura visual activa.", forzar ? "(fallback)" : "(config)", "modo:", esMax ? "MAX-dynamic" : "normal");
+    console.log("[KathWare] Lectura visual activa (plataforma:", p, "ms:", pMs, ")");
   }
 
-  // -------------------- Limpieza general --------------------
+  // -------------------- Limpieza --------------------
   function cerrarOverlay() {
     overlayActivo = false;
     if (overlayElement) {
@@ -491,66 +438,64 @@
 
   function limpiarTodo() {
     limpiarVisual();
-
-    if (trackLectura) {
-      trackLectura.oncuechange = null;
-      trackLectura = null;
-    }
-
+    if (trackLectura) { trackLectura.oncuechange = null; trackLectura = null; }
     cerrarOverlay();
     detenerLectura();
   }
 
-  // -------------------- Inicio / modos --------------------
+  // -------------------- Start --------------------
   function iniciarModoDetectado() {
     const tipo = detectarTipoReproductor();
     const video = getMainVideo();
+    const p = getPlatform();
 
     console.log("[KathWare] Tipo detectado:", tipo);
 
     if (tipo === "flow") {
       if (video) iniciarOverlay(video);
 
+      // Flow: si hay tracks, TRACK. Si no, visual por plataforma (Flow suele no tener)
       if (video?.textTracks && video.textTracks.length > 0) {
-        iniciarLecturaSubtitulos(video);
-      } else if (fuenteSubGlobal === "visual") {
-        iniciarLecturaVisual(false);
+        iniciarLecturaTrack(video);
+      } else {
+        iniciarLecturaVisualPorPlataforma();
       }
       return;
     }
 
     if (tipo === "lector") {
-      const hayTracks = video?.textTracks && video.textTracks.length > 0;
-
-      if (hayTracks) {
-        iniciarLecturaSubtitulos(video);
-        if (fuenteSubGlobal === "visual") iniciarLecturaVisual(false);
-      } else {
-        console.warn("[KathWare] No hay textTracks; usando fallback visual.");
-        iniciarLecturaVisual(true);
+      const ok = iniciarLecturaTrack(video);
+      if (!ok) {
+        console.warn("[KathWare] No hay textTracks; usando visual por plataforma.");
+        iniciarLecturaVisualPorPlataforma();
       }
       return;
     }
 
     if (tipo === "visual") {
-      iniciarLecturaVisual(false);
-      if (video?.textTracks && video.textTracks.length > 0) iniciarLecturaSubtitulos(video);
+      iniciarLecturaVisualPorPlataforma();
       return;
     }
   }
 
   function toggleExtension() {
     extensionActiva = !extensionActiva;
-    console.log(`[KathWare] ${extensionActiva ? "Activado" : "Desactivado"}`);
+
+    const p = getPlatform();
+    const label = platformLabel(p);
 
     if (extensionActiva) {
+      console.log("[KathWare] Activado");
+      notify(`🟢 KathWare ON — ${label}`);
       cargarConfigDesdeStorage(() => iniciarModoDetectado());
     } else {
+      console.log("[KathWare] Desactivado");
+      notify(`🔴 KathWare OFF — ${label}`);
       limpiarTodo();
     }
   }
 
-  // -------------------- Atajo local --------------------
+  // -------------------- Hotkey --------------------
   document.addEventListener("keydown", e => {
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "k") {
       e.preventDefault();
@@ -573,7 +518,7 @@
 
         if (video?.textTracks && Number.isFinite(idx) && idx >= 0 && idx < video.textTracks.length) {
           trackIndexGlobal = idx;
-          if (extensionActiva) iniciarLecturaSubtitulos(video);
+          if (extensionActiva) iniciarLecturaTrack(video);
           sendResponse && sendResponse({ status: "ok" });
           return false;
         }
