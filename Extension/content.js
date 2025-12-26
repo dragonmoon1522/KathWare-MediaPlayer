@@ -1,10 +1,10 @@
 // ====================================================
-// KathWare Media Player - Content Script (MV3)
+// KathWare Media Player - Content Script (MV3) - v2.0.0 (estable)
 // - Overlay SOLO para Flow / reproductores no accesibles
 // - Lectura TRACK cuando existan textTracks
-// - Fallback visual si el usuario elige "visual"
+// - Fallback visual (forzado) cuando NO hay textTracks en plataformas “accesibles” (Netflix/Disney/etc.)
 // - Selector de pista desde popup (trackIndex) + setTrack
-// - En Flow/no accesibles: SI hay subtítulos detectables, también los lee
+// - En Flow/no accesibles: si hay subtítulos detectables, también los lee (track o visual si el user eligió)
 // ====================================================
 
 // -------------------- Core (voz + lectura) --------------------
@@ -58,8 +58,8 @@ function leerTextoAccesible(texto, modo) {
     const utter = new SpeechSynthesisUtterance(texto);
     utter.voice = voiceES;
     utter.lang = voiceES.lang;
-    speechSynthesis.cancel();
-    speechSynthesis.speak(utter);
+    try { speechSynthesis.cancel(); } catch (_) {}
+    try { speechSynthesis.speak(utter); } catch (_) {}
   }
 }
 
@@ -130,6 +130,7 @@ function detectarTipoReproductor() {
 
   const dominiosAccesibles = [
     "netflix",
+    "disneyplus",
     "disney",
     "primevideo",
     "amazon",
@@ -184,27 +185,35 @@ function iniciarModoDetectado() {
 
   // Regla: overlay SOLO si es flow/no accesible
   if (tipo === "flow") {
-    iniciarOverlay(video); // overlay controles
-    // pero igual intentamos lectura, por si hay tracks o captions detectables
+    iniciarOverlay(video);
+
+    // En Flow intentamos leer si hay tracks; si el usuario eligió visual, usamos visual.
     if (video.textTracks && video.textTracks.length > 0) {
       iniciarLecturaSubtitulos(video);
     } else if (fuenteSubGlobal === "visual") {
-      iniciarLecturaVisual();
+      iniciarLecturaVisual(false);
     }
     return;
   }
 
   // Plataformas accesibles / normales:
   if (tipo === "lector") {
-    iniciarLecturaSubtitulos(video);
-    // si el user elige visual, igual activamos visual
-    if (fuenteSubGlobal === "visual") iniciarLecturaVisual();
+    const hayTracks = video.textTracks && video.textTracks.length > 0;
+
+    if (hayTracks) {
+      iniciarLecturaSubtitulos(video);
+      if (fuenteSubGlobal === "visual") iniciarLecturaVisual(false);
+    } else {
+      console.warn("[KathWare] No hay textTracks; usando fallback visual.");
+      iniciarLecturaVisual(true); // ✅ forzado
+    }
     return;
   }
 
   // visual
   if (tipo === "visual") {
-    iniciarLecturaVisual();
+    iniciarLecturaVisual(false);
+
     // y si existieran tracks, también
     if (video.textTracks && video.textTracks.length > 0) iniciarLecturaSubtitulos(video);
     return;
@@ -301,24 +310,26 @@ function iniciarLecturaSubtitulos(video) {
 }
 
 // -------------------- Visual fallback --------------------
-function iniciarLecturaVisual() {
+function iniciarLecturaVisual(forzar = false) {
   cargarVozES();
   if (visualInterval) clearInterval(visualInterval);
 
   visualInterval = setInterval(() => {
     if (modoNarradorGlobal === "off") return;
-    if (fuenteSubGlobal !== "visual") return;
 
-    // candidatos comunes (genéricos)
+    // ✅ si forzar=true, lo activamos aunque la config sea "track"
+    if (!forzar && fuenteSubGlobal !== "visual") return;
+
+    // Genérico + algunas pistas comunes (incluye playkit por si acaso)
     const visual = document.querySelector(
-      ".plyr__caption, .flirc-caption, [class*='caption'], [class*='cc'], [class*='subtitle'], [aria-label*='closed'], [aria-label*='caption']"
+      ".playkit-subtitles, .plyr__caption, .flirc-caption, [class*='caption'], [class*='subtitle'], [class*='subtitles'], [class*='cc'], [aria-label*='closed'], [aria-label*='caption'], [aria-label*='subt']"
     );
 
     const texto = visual?.textContent?.trim();
     if (texto) leerTextoAccesible(texto, modoNarradorGlobal);
   }, 800);
 
-  console.log("[KathWare] Lectura visual activa.");
+  console.log("[KathWare] Lectura visual activa.", forzar ? "(fallback)" : "");
 }
 
 // -------------------- Limpieza --------------------
@@ -328,8 +339,6 @@ function cerrarOverlay() {
     overlayElement.remove();
     overlayElement = null;
   }
-  // Ojo: NO llamamos detenerLectura acá si querés seguir leyendo subtítulos sin overlay.
-  // Pero en esta extensión, cerrar overlay suele implicar "apagado" del overlay, no del narrador.
 }
 
 function limpiarTodo() {
@@ -360,7 +369,7 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.onMessage) {
     if (message?.action === "toggleNarrator") {
       toggleExtension();
       sendResponse && sendResponse({ status: "ok" });
-      return true;
+      return false; // ✅ respondimos sync
     }
 
     // Cambio de pista directo desde popup
@@ -372,16 +381,14 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.onMessage) {
         trackIndexGlobal = idx;
 
         // si está activa, aplicamos inmediato
-        if (extensionActiva) {
-          iniciarLecturaSubtitulos(video);
-        }
+        if (extensionActiva) iniciarLecturaSubtitulos(video);
 
         sendResponse && sendResponse({ status: "ok" });
-        return true;
+        return false; // ✅ respondimos sync
       }
 
       sendResponse && sendResponse({ status: "ignored" });
-      return true;
+      return false; // ✅ respondimos sync
     }
 
     // Settings actualizados (modo narrador, fuente, trackIndex)
@@ -393,7 +400,6 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.onMessage) {
           trackIndexGlobal
         });
 
-        // Si está activa, re-inicia el modo para aplicar cambios
         if (extensionActiva) {
           limpiarTodo();
           iniciarModoDetectado();
@@ -401,7 +407,7 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.onMessage) {
       });
 
       sendResponse && sendResponse({ status: "ok" });
-      return true;
+      return false; // ✅ respondimos sync
     }
 
     // Lista de pistas para el popup
@@ -414,7 +420,7 @@ if (typeof chrome !== "undefined" && chrome?.runtime?.onMessage) {
           }))
         : [];
       sendResponse && sendResponse({ tracks });
-      return true;
+      return false; // ✅ respondimos sync
     }
 
     return false;
