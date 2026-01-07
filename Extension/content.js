@@ -208,14 +208,27 @@
     ultimoEmitAt = 0;
   }
 
-  function shouldEmit(t) {
-    const now = Date.now();
-    if (!t) return false;
-    if (t === ultimoTexto && now - ultimoEmitAt < CFG.cooldownMs) return false;
-    ultimoTexto = t;
-    ultimoEmitAt = now;
-    return true;
-  }
+  let lastEmitText = "";
+let lastEmitAt = 0;
+
+// anti-burst: Netflix a veces dispara 2-3 eventos iguales en <200ms
+const BURST_MS = 450;
+
+function shouldEmit(t) {
+  const now = Date.now();
+  if (!t) return false;
+
+  // mismo texto muy pegado => ignorar
+  if (t === lastEmitText && (now - lastEmitAt) < BURST_MS) return false;
+
+  // cooldown general (si querés)
+  if (t === lastEmitText && (now - lastEmitAt) < CFG.cooldownMs) return false;
+
+  lastEmitText = t;
+  lastEmitAt = now;
+  return true;
+}
+
 
   function pushToLiveRegion(texto) {
     const lr = asegurarLiveRegion();
