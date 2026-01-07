@@ -1,45 +1,46 @@
 // ====================================================
 // KathWare Media Player - content.js (MV3) - v2.0.0
 // Engine v4-ish (rehook + polling + overlay pill + TRACK/VISUAL)
-// - TRACK: lee video.textTracks (oncuechange + poll activeCues)
-// - VISUAL: lee captions por selectores por plataforma + observer + poll
+// - TRACK: lee video.textTracks (oncuechange + poll activeCues fallback)
+// - VISUAL: lee captions por selectores por plataforma + observer (poll solo fallback)
 // - Overlay: pill siempre disponible, panel se expande con subtítulos o click
 // - Controles de teclado estilo HTML5 cuando aplica (no secuestra al escribir)
 // - ON/OFF: via command (background) + fallback hotkey in-page (configurable)
+// Compat: Chromium (chrome.*) + Firefox (browser.*)
 // ====================================================
 
 (() => {
   if (window.__KATHWARE_MEDIA_PLAYER__?.loadedAt) return;
   window.__KATHWARE_MEDIA_PLAYER__ = { loadedAt: Date.now(), version: "2.0.0" };
 
-  const api = (typeof chrome !== "undefined" && chrome?.runtime) ? chrome
-            : (typeof browser !== "undefined" && browser?.runtime) ? browser
-            : null;
+  const api =
+    (typeof chrome !== "undefined" && chrome?.runtime) ? chrome :
+    (typeof browser !== "undefined" && browser?.runtime) ? browser :
+    null;
 
   const CFG = {
     debug: true,
 
-    // Engine timings (anti-freeze + SPA-proof)
+    // Engine timings
     pollMsTrack: 250,
     rehookMs: 1000,
     pollMsVisual: 450,
     cooldownMs: 650,
+    burstMs: 450,
 
-    // visual: re-select node cada tanto
+    // Visual reselect (para SPA que recrea captions)
     visualReselectMs: 1200,
 
-    // keyboard (cuando overlay controla)
+    // keyboard controls
     seekSmall: 5,
     seekBig: 10,
-    seekHuge: 30,
     volStep: 0.05,
 
-    // Hotkey fallback dentro de la página (configurable)
-    // OJO: los comandos globales los maneja el browser. Esto es “por si acaso”.
+    // Hotkey fallback in-page (por si commands no está o choca)
     hotkeys: {
       toggle: { ctrl: true, alt: true, shift: false, key: "k" },
       mode:   { ctrl: true, alt: true, shift: false, key: "l" },
-      panel:  { ctrl: true, alt: true, shift: false, key: "o" }, // abrir/cerrar panel
+      panel:  { ctrl: true, alt: true, shift: false, key: "o" },
     },
   };
 
@@ -48,19 +49,16 @@
   // -------------------- Estado (settings) --------------------
   let extensionActiva = false;
 
-  // Modo de salida
   // "off" | "sintetizador" | "lector"
   let modoNarradorGlobal = "lector";
 
-  // Fuente de subtítulos
   // "auto" | "track" | "visual"
   let fuenteSubGlobal = "auto";
-
   let trackIndexGlobal = 0;
 
-  // Para no “pegarse” repitiendo
-  let ultimoTexto = "";
-  let ultimoEmitAt = 0;
+  // Fuente efectiva real (pipeline)
+  // "track" | "visual"
+  let effectiveFuente = "visual";
 
   // Voice
   let voiceES = null;
@@ -73,11 +71,16 @@
   let currentTrack = null;
 
   // Timers/observers
-  let pollTimer = null;
+  let pollTimerTrack = null;
   let rehookTimer = null;
-  let visualPollTimer = null;
+  let pollTimerVisual = null;
   let visualReselectTimer = null;
   let visualObserver = null;
+  let visualObserverActive = false;
+
+  // Visual node/sel
+  let visualNode = null;
+  let visualSelectors = null;
 
   // Overlay
   let overlayRoot = null;
@@ -88,11 +91,14 @@
   let overlayTrackSelect = null;
   let overlayModoSelect = null;
   let overlayFuenteSelect = null;
-  let overlayControlsRow = null;
 
   // Toast
   let toastEl = null;
   let toastTimer = null;
+
+  // Dedupe
+  let lastEmitText = "";
+  let lastEmitAt = 0;
 
   // -------------------- Utils --------------------
   const normalize = (s) =>
@@ -102,6 +108,8 @@
       .replace(/\s+/g, " ")
       .trim();
 
+  const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
+
   const isTyping = () => {
     const ae = document.activeElement;
     if (!ae) return false;
@@ -110,8 +118,6 @@
     if (ae.isContentEditable) return true;
     return false;
   };
-
-  const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
   function getPlatform() {
     const h = location.hostname.toLowerCase();
@@ -155,7 +161,6 @@
             trackIndexGlobal = Number.isFinite(n) ? n : 0;
           }
 
-          // hotkeys custom (fallback in-page)
           if (data?.hotkeys && typeof data.hotkeys === "object") {
             CFG.hotkeys = { ...CFG.hotkeys, ...data.hotkeys };
           }
@@ -204,31 +209,19 @@
       try { liveRegion.remove(); } catch (_) {}
       liveRegion = null;
     }
-    ultimoTexto = "";
-    ultimoEmitAt = 0;
+    lastEmitText = "";
+    lastEmitAt = 0;
   }
 
-  let lastEmitText = "";
-let lastEmitAt = 0;
-
-// anti-burst: Netflix a veces dispara 2-3 eventos iguales en <200ms
-const BURST_MS = 450;
-
-function shouldEmit(t) {
-  const now = Date.now();
-  if (!t) return false;
-
-  // mismo texto muy pegado => ignorar
-  if (t === lastEmitText && (now - lastEmitAt) < BURST_MS) return false;
-
-  // cooldown general (si querés)
-  if (t === lastEmitText && (now - lastEmitAt) < CFG.cooldownMs) return false;
-
-  lastEmitText = t;
-  lastEmitAt = now;
-  return true;
-}
-
+  function shouldEmit(t) {
+    const now = Date.now();
+    if (!t) return false;
+    if (t === lastEmitText && (now - lastEmitAt) < CFG.burstMs) return false;
+    if (t === lastEmitText && (now - lastEmitAt) < CFG.cooldownMs) return false;
+    lastEmitText = t;
+    lastEmitAt = now;
+    return true;
+  }
 
   function pushToLiveRegion(texto) {
     const lr = asegurarLiveRegion();
@@ -248,22 +241,28 @@ function shouldEmit(t) {
     } catch (_) {}
   }
 
+  function shouldReadNow() {
+    if (!extensionActiva) return false;
+    if (!currentVideo) return true;
+    try {
+      if (currentVideo.paused || currentVideo.ended) return false;
+    } catch (_) {}
+    return true;
+  }
+
   function leerTextoAccesible(texto) {
     const t = normalize(texto);
     if (!t) return;
     if (!shouldEmit(t)) return;
 
-    // overlay siempre actualiza el texto si está activo
     updateOverlayText(t);
 
     if (!extensionActiva) return;
     if (modoNarradorGlobal === "off") return;
+    if (!shouldReadNow()) return;
 
-    if (modoNarradorGlobal === "lector") {
-      pushToLiveRegion(t);
-    } else if (modoNarradorGlobal === "sintetizador") {
-      speakTTS(t);
-    }
+    if (modoNarradorGlobal === "lector") pushToLiveRegion(t);
+    else if (modoNarradorGlobal === "sintetizador") speakTTS(t);
   }
 
   // -------------------- Toast --------------------
@@ -301,7 +300,7 @@ function shouldEmit(t) {
     } catch (_) {}
   }
 
-  // -------------------- Overlay (pill + panel) --------------------
+  // -------------------- Overlay --------------------
   function ensureOverlay() {
     if (overlayRoot) return;
 
@@ -313,7 +312,6 @@ function shouldEmit(t) {
     overlayRoot.style.zIndex = "2147483647";
     overlayRoot.style.fontFamily = "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif";
 
-    // Panel
     overlayPanel = document.createElement("div");
     overlayPanel.id = "kathware-overlay-panel";
     Object.assign(overlayPanel.style, {
@@ -337,7 +335,6 @@ function shouldEmit(t) {
     overlayText.style.fontSize = "16px";
     overlayText.style.lineHeight = "1.35";
 
-    // Settings row
     const settingsRow = document.createElement("div");
     settingsRow.style.display = "grid";
     settingsRow.style.gridTemplateColumns = "1fr 1fr";
@@ -363,18 +360,16 @@ function shouldEmit(t) {
     settingsRow.appendChild(overlayModoSelect);
     settingsRow.appendChild(overlayFuenteSelect);
 
-    // Track select
     overlayTrackSelect = document.createElement("select");
     overlayTrackSelect.setAttribute("aria-label", "Pista de subtítulos");
     overlayTrackSelect.style.marginTop = "8px";
     overlayTrackSelect.innerHTML = `<option value="0">Pista 1</option>`;
 
-    // Controls row (para no accesibles o si el usuario quiere)
-    overlayControlsRow = document.createElement("div");
-    overlayControlsRow.style.display = "flex";
-    overlayControlsRow.style.flexWrap = "wrap";
-    overlayControlsRow.style.gap = "8px";
-    overlayControlsRow.style.marginTop = "10px";
+    const controlsRow = document.createElement("div");
+    controlsRow.style.display = "flex";
+    controlsRow.style.flexWrap = "wrap";
+    controlsRow.style.gap = "8px";
+    controlsRow.style.marginTop = "10px";
 
     const mkBtn = (label, onClick) => {
       const b = document.createElement("button");
@@ -391,8 +386,6 @@ function shouldEmit(t) {
     };
 
     const btnToggle = mkBtn("ON/OFF", () => toggleExtension());
-    const btnClose  = mkBtn("Cerrar", () => setPanelOpen(false));
-
     const btnPlay   = mkBtn("▶️", () => currentVideo?.play?.());
     const btnPause  = mkBtn("⏸️", () => currentVideo?.pause?.());
     const btnBack   = mkBtn("⏪", () => seekBy(-CFG.seekBig));
@@ -400,24 +393,24 @@ function shouldEmit(t) {
     const btnMute   = mkBtn("M", () => toggleMute());
     const btnCC     = mkBtn("C", () => toggleCaptions());
     const btnFull   = mkBtn("⛶", () => requestFull());
+    const btnClose  = mkBtn("Cerrar", () => setPanelOpen(false));
 
-    overlayControlsRow.appendChild(btnToggle);
-    overlayControlsRow.appendChild(btnPlay);
-    overlayControlsRow.appendChild(btnPause);
-    overlayControlsRow.appendChild(btnBack);
-    overlayControlsRow.appendChild(btnFwd);
-    overlayControlsRow.appendChild(btnMute);
-    overlayControlsRow.appendChild(btnCC);
-    overlayControlsRow.appendChild(btnFull);
-    overlayControlsRow.appendChild(btnClose);
+    controlsRow.appendChild(btnToggle);
+    controlsRow.appendChild(btnPlay);
+    controlsRow.appendChild(btnPause);
+    controlsRow.appendChild(btnBack);
+    controlsRow.appendChild(btnFwd);
+    controlsRow.appendChild(btnMute);
+    controlsRow.appendChild(btnCC);
+    controlsRow.appendChild(btnFull);
+    controlsRow.appendChild(btnClose);
 
     overlayPanel.appendChild(overlayStatus);
     overlayPanel.appendChild(overlayText);
     overlayPanel.appendChild(settingsRow);
     overlayPanel.appendChild(overlayTrackSelect);
-    overlayPanel.appendChild(overlayControlsRow);
+    overlayPanel.appendChild(controlsRow);
 
-    // Pill
     overlayPill = document.createElement("button");
     overlayPill.type = "button";
     overlayPill.setAttribute("aria-label", "Abrir KathWare Media Player");
@@ -443,18 +436,16 @@ function shouldEmit(t) {
     overlayRoot.appendChild(overlayPill);
     document.documentElement.appendChild(overlayRoot);
 
-    // Bind selects
     overlayModoSelect.addEventListener("change", () => {
       modoNarradorGlobal = overlayModoSelect.value;
-      if (api?.storage?.local) api.storage.local.set({ modoNarrador: modoNarradorGlobal });
+      api?.storage?.local?.set?.({ modoNarrador: modoNarradorGlobal });
       if (modoNarradorGlobal === "off") detenerLectura();
       updateOverlayStatus();
     });
 
     overlayFuenteSelect.addEventListener("change", () => {
       fuenteSubGlobal = overlayFuenteSelect.value;
-      if (api?.storage?.local) api.storage.local.set({ fuenteSub: fuenteSubGlobal });
-      // reiniciar pipeline sin apagar extensión
+      api?.storage?.local?.set?.({ fuenteSub: fuenteSubGlobal });
       if (extensionActiva) restartPipeline();
       updateOverlayStatus();
     });
@@ -463,8 +454,8 @@ function shouldEmit(t) {
       const idx = Number(overlayTrackSelect.value);
       if (Number.isFinite(idx)) {
         trackIndexGlobal = idx;
-        if (api?.storage?.local) api.storage.local.set({ trackIndex: trackIndexGlobal });
-        if (extensionActiva) startTrack();
+        api?.storage?.local?.set?.({ trackIndex: trackIndexGlobal });
+        if (extensionActiva) restartPipeline();
         updateOverlayStatus();
       }
     });
@@ -478,8 +469,7 @@ function shouldEmit(t) {
   function updateOverlayText(text) {
     ensureOverlay();
     overlayText.textContent = text || "";
-    // auto-expand cuando llegan subtítulos (tu requisito)
-    if (text && text.trim()) setPanelOpen(true);
+    if (text && text.trim()) setPanelOpen(true); // auto-expand cuando hay subtítulos
   }
 
   function describeTrack(t) {
@@ -517,7 +507,6 @@ function shouldEmit(t) {
 
   function updateOverlayStatus() {
     ensureOverlay();
-
     const p = getPlatform();
     const label = platformLabel(p);
 
@@ -528,9 +517,10 @@ function shouldEmit(t) {
 
     const src = fuenteSubGlobal === "track" ? "🎛️TRACK"
               : fuenteSubGlobal === "visual" ? "👀VISUAL"
-              : "🤖AUTO";
+              : `🤖AUTO→${effectiveFuente.toUpperCase()}`;
 
     const trackInfo = currentTrack ? describeTrack(currentTrack) : "Sin track";
+
     overlayModoSelect.value = modoNarradorGlobal;
     overlayFuenteSelect.value = fuenteSubGlobal;
 
@@ -576,12 +566,33 @@ function shouldEmit(t) {
     }
   }
 
+  function trackSeemsUsable(track) {
+    if (!track) return false;
+    try { if (track.mode === "disabled") track.mode = "hidden"; } catch (_) {}
+
+    try {
+      const txt = readActiveCues(track);
+      if (txt) return true;
+
+      const len = track.cues ? track.cues.length : 0;
+      if (len > 0) return true;
+    } catch (_) {
+      return false;
+    }
+    return false;
+  }
+
+  function videoHasUsableTracks(video) {
+    const list = Array.from(video?.textTracks || []);
+    if (!list.length) return false;
+    return list.some(trackSeemsUsable);
+  }
+
   function pickBestTrack(video) {
     const list = Array.from(video?.textTracks || []);
     if (!list.length) return null;
 
     const idx = clamp(trackIndexGlobal, 0, list.length - 1);
-    // prefer: user choice if exists, else showing, else hidden+has cues, else hidden, else first
     return (
       list[idx] ||
       list.find(t => t.mode === "showing") ||
@@ -598,13 +609,13 @@ function shouldEmit(t) {
     try { track.oncuechange = null; } catch (_) {}
 
     track.oncuechange = () => {
-      if (!extensionActiva) return;
-      if (fuenteSubGlobal === "visual") return; // si el user forzó visual
+      if (!shouldReadNow()) return;
+      if (effectiveFuente !== "track") return;
+
       const txt = readActiveCues(track);
       if (txt) leerTextoAccesible(txt);
     };
 
-    // Emit inicial
     const initial = readActiveCues(track);
     if (initial) leerTextoAccesible(initial);
   }
@@ -618,15 +629,21 @@ function shouldEmit(t) {
     }
 
     const best = pickBestTrack(v);
+    if (!best) {
+      currentTrack = null;
+      updateOverlayStatus();
+      return false;
+    }
+
+    if (!trackSeemsUsable(best)) {
+      log("TRACK no usable, fallback a VISUAL:", describeTrack(best));
+      currentTrack = null;
+      updateOverlayStatus();
+      return false;
+    }
+
     if (best !== currentTrack) {
-      
-      if (!trackSeemsUsable(best)) {
-  log("TRACK no usable, fallback a VISUAL:", describeTrack(best));
-  currentTrack = null;
-  updateOverlayStatus();
-  return false;
-}
-currentTrack = best;
+      currentTrack = best;
       attachTrack(best);
       updateOverlayTracksList();
       updateOverlayStatus();
@@ -636,9 +653,9 @@ currentTrack = best;
   }
 
   function pollTrackTick() {
-    if (!extensionActiva) return;
+    if (!shouldReadNow()) return;
+    if (effectiveFuente !== "track") return;
     if (!currentTrack) return;
-    if (fuenteSubGlobal === "visual") return;
 
     const txt = readActiveCues(currentTrack);
     if (txt) leerTextoAccesible(txt);
@@ -711,15 +728,10 @@ currentTrack = best;
     return false;
   }
 
-  let visualNode = null;
-  let visualSelectors = null;
-
   function pickBestVisualNode() {
     const nodes = [];
-    for (const sel of visualSelectors || []) {
-      try {
-        document.querySelectorAll(sel).forEach(n => nodes.push(n));
-      } catch (_) {}
+    for (const sel of (visualSelectors || [])) {
+      try { document.querySelectorAll(sel).forEach(n => nodes.push(n)); } catch (_) {}
     }
     if (!nodes.length) return null;
 
@@ -731,46 +743,64 @@ currentTrack = best;
     return null;
   }
 
+  function stopVisualObserver() {
+    try { visualObserver?.disconnect?.(); } catch (_) {}
+    visualObserver = null;
+    visualObserverActive = false;
+  }
+
   function startVisual() {
     const p = getPlatform();
     visualSelectors = platformSelectors(p);
-    visualNode = pickBestVisualNode() || visualNode;
 
-    // Observer: si el nodo cambia texto, emitimos más rápido que polling
+    const next = pickBestVisualNode();
+    if (next) visualNode = next;
+
     stopVisualObserver();
+
     if (visualNode) {
       try {
         visualObserver = new MutationObserver(() => {
-          if (!extensionActiva) return;
-          if (fuenteSubGlobal === "track") return; // si forzó track
+          if (!shouldReadNow()) return;
+          if (effectiveFuente !== "visual") return;
+
           const t = normalize(visualNode?.textContent);
           if (!looksLikeNoise(visualNode, t)) leerTextoAccesible(t);
         });
+
         visualObserver.observe(visualNode, { childList: true, subtree: true, characterData: true });
-      } catch (_) {}
+        visualObserverActive = true;
+      } catch (_) {
+        visualObserverActive = false;
+      }
     }
 
     updateOverlayStatus();
     log("VISUAL activo:", p);
   }
 
-  function stopVisualObserver() {
-    try { visualObserver?.disconnect?.(); } catch (_) {}
-    visualObserver = null;
-  }
+  function pollVisualTick() {
+    if (!shouldReadNow()) return;
+    if (effectiveFuente !== "visual") return;
 
-  function visualPollTick() {
-    if (!extensionActiva) return;
-    if (fuenteSubGlobal === "track") return; // si forzó track
+    if (!visualSelectors) visualSelectors = platformSelectors(getPlatform());
 
-    if (!visualNode) visualNode = pickBestVisualNode();
-    if (!visualNode) return;
+    // re-selección si no hay nodo
+    if (!visualNode) {
+      visualNode = pickBestVisualNode();
+      if (visualNode) startVisual();
+      return;
+    }
 
+    // Si observer está activo, poll no emite (evita duplicados)
+    if (visualObserverActive) return;
+
+    // Fallback: solo si no hay observer
     const t = normalize(visualNode.textContent);
     if (!looksLikeNoise(visualNode, t)) leerTextoAccesible(t);
   }
 
-  // -------------------- Rehook pipeline --------------------
+  // -------------------- Rehook --------------------
   function computeSignature(v, t) {
     const vSig = v ? (v.currentSrc || v.src || "v") : "noV";
     const tSig = t ? (t.label + "|" + t.language + "|" + t.mode) : "noT";
@@ -783,80 +813,64 @@ currentTrack = best;
 
   function rehookTick() {
     const v = getMainVideo();
+
     if (v !== currentVideo) {
       currentVideo = v;
+      try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
       currentTrack = null;
+
+      visualNode = null;
+      visualSelectors = null;
+      stopVisualObserver();
+
       updateOverlayTracksList();
       updateOverlayStatus();
     }
 
-    // Si no hay video, igual dejamos overlay pill para que el user pueda ON/OFF y settings
     ensureOverlay();
     updateOverlayStatus();
 
     if (!extensionActiva) return;
 
-function trackSeemsUsable(track) {
-  if (!track) return false;
-
-  // Si no está en showing/hidden, lo intentamos activar
-  try {
-    if (track.mode === "disabled") track.mode = "hidden";
-  } catch (_) {}
-
-  // Test de acceso a activeCues/cues (Netflix a veces rompe esto)
-  try {
-    const txt = readActiveCues(track);
-    if (txt && txt.length > 0) return true;
-
-    // cues length a veces existe aunque activeCues esté vacío
-    const len = track.cues ? track.cues.length : 0;
-    if (len && len > 0) return true;
-  } catch (_) {
-    return false;
-  }
-
-  return false;
-}
-
-function videoHasUsableTracks(video) {
-  const list = Array.from(video?.textTracks || []);
-  if (!list.length) return false;
-  return list.some(t => trackSeemsUsable(t));
-}
-
-
-    // Fuente auto: preferir track si existe
     const hasUsableTracks = videoHasUsableTracks(currentVideo);
-effectiveFuente =
-  fuenteSubGlobal === "auto"
-    ? (hasUsableTracks ? "track" : "visual")
-    : fuenteSubGlobal;
 
+    effectiveFuente =
+      fuenteSubGlobal === "auto"
+        ? (hasUsableTracks ? "track" : "visual")
+        : (fuenteSubGlobal === "track" ? "track" : "visual");
 
-    // Aplicar effective fuente (sin pisar el setting guardado)
-    // (esto solo guía al pipeline)
+    // mutear pipeline que no corresponde
+    if (effectiveFuente === "track") {
+      stopVisualObserver();
+      visualNode = null;
+      visualSelectors = null;
+    } else {
+      try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
+      currentTrack = null;
+    }
+
     const bestTrack = (effectiveFuente === "track") ? pickBestTrack(currentVideo) : null;
-
     const sig = computeSignature(currentVideo, bestTrack);
+
     if (sig !== lastSig) {
       lastSig = sig;
 
-      // Reiniciar ambos, pero arrancar el que toca
       if (effectiveFuente === "track") {
         const ok = startTrack();
-        if (!ok) startVisual();
+        if (!ok) {
+          effectiveFuente = "visual";
+          startVisual();
+        }
       } else {
         startVisual();
       }
+
+      updateOverlayStatus();
     }
   }
 
-  // -------------------- Keyboard controls (cuando aplica) --------------------
+  // -------------------- Keyboard controls --------------------
   function isNonAccessibleScenario() {
-    // Heurística simple:
-    // - Flow casi siempre necesita overlay
-    // - o si no hay tracks y no detectamos captions (no podemos saber perfecto)
     return getPlatform() === "flow";
   }
 
@@ -864,7 +878,8 @@ effectiveFuente =
     const v = currentVideo;
     if (!v) return;
     try {
-      v.currentTime = clamp((v.currentTime || 0) + delta, 0, Number.isFinite(v.duration) ? v.duration : (v.currentTime + delta));
+      const dur = Number.isFinite(v.duration) ? v.duration : (v.currentTime + delta);
+      v.currentTime = clamp((v.currentTime || 0) + delta, 0, dur);
     } catch (_) {}
   }
 
@@ -881,7 +896,6 @@ effectiveFuente =
   }
 
   function toggleCaptions() {
-    // Solo controla TRACK (en visual no tenemos switch universal)
     const v = currentVideo;
     if (!v?.textTracks?.length) {
       notify("⚠️ No hay pistas de subtítulos para alternar.");
@@ -891,7 +905,6 @@ effectiveFuente =
     if (!t) return;
 
     try {
-      // toggle hidden <-> showing (o disabled)
       if (t.mode === "showing") t.mode = "hidden";
       else if (t.mode === "hidden") t.mode = "showing";
       else t.mode = "hidden";
@@ -905,12 +918,8 @@ effectiveFuente =
     if (!extensionActiva) return false;
     if (isTyping()) return false;
 
-    // Solo capturar sin Ctrl/Alt/Meta (para no romper shortcuts del browser)
     if (e.ctrlKey || e.altKey || e.metaKey) return false;
 
-    // Capturamos cuando:
-    // - estamos en Flow (no accesible)
-    // - o el panel está abierto (user eligió interactuar)
     const panelOpen = overlayPanel && overlayPanel.style.display !== "none";
     if (!panelOpen && !isNonAccessibleScenario()) return false;
 
@@ -935,34 +944,12 @@ effectiveFuente =
       return true;
     }
 
-    if (key === "j") {
-      e.preventDefault();
-      seekBy(-CFG.seekBig);
-      return true;
-    }
-    if (key === "l") {
-      e.preventDefault();
-      seekBy(+CFG.seekBig);
-      return true;
-    }
+    if (key === "j") { e.preventDefault(); seekBy(-CFG.seekBig); return true; }
+    if (key === "l") { e.preventDefault(); seekBy(+CFG.seekBig); return true; }
 
-    if (key === "m") {
-      e.preventDefault();
-      toggleMute();
-      return true;
-    }
-
-    if (key === "c") {
-      e.preventDefault();
-      toggleCaptions();
-      return true;
-    }
-
-    if (key === "f") {
-      e.preventDefault();
-      requestFull();
-      return true;
-    }
+    if (key === "m") { e.preventDefault(); toggleMute(); return true; }
+    if (key === "c") { e.preventDefault(); toggleCaptions(); return true; }
+    if (key === "f") { e.preventDefault(); requestFull(); return true; }
 
     if (key === "arrowup") {
       e.preventDefault();
@@ -984,25 +971,23 @@ effectiveFuente =
 
   // -------------------- Pipeline control --------------------
   function stopTimers() {
-    try { clearInterval(pollTimer); } catch (_) {}
+    try { clearInterval(pollTimerTrack); } catch (_) {}
     try { clearInterval(rehookTimer); } catch (_) {}
-    try { clearInterval(visualPollTimer); } catch (_) {}
+    try { clearInterval(pollTimerVisual); } catch (_) {}
     try { clearInterval(visualReselectTimer); } catch (_) {}
 
-    pollTimer = null;
+    pollTimerTrack = null;
     rehookTimer = null;
-    visualPollTimer = null;
+    pollTimerVisual = null;
     visualReselectTimer = null;
   }
 
   function stopAll() {
     stopTimers();
 
-    // Track cleanup
     try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
     currentTrack = null;
 
-    // Visual cleanup
     stopVisualObserver();
     visualNode = null;
     visualSelectors = null;
@@ -1014,34 +999,38 @@ effectiveFuente =
   function startTimers() {
     stopTimers();
 
-    // rehook siempre (incluso ON, para enganchar cambios)
     rehookTimer = setInterval(rehookTick, CFG.rehookMs);
 
-    // Poll de track (anti cuechange freeze)
-    pollTimer = setInterval(pollTrackTick, CFG.pollMsTrack);
+    pollTimerTrack = setInterval(pollTrackTick, CFG.pollMsTrack);
+    pollTimerVisual = setInterval(pollVisualTick, CFG.pollMsVisual);
 
-    // Visual poll (si el pipeline lo necesita)
-    visualPollTimer = setInterval(visualPollTick, CFG.pollMsVisual);
-
-    // reselect visual node cada tanto (porque SPAs recrean DOM)
     visualReselectTimer = setInterval(() => {
       if (!extensionActiva) return;
-      if (fuenteSubGlobal === "track") return;
+      if (effectiveFuente !== "visual") return;
+
       if (!visualSelectors) visualSelectors = platformSelectors(getPlatform());
-      visualNode = pickBestVisualNode() || visualNode;
-      if (visualNode) startVisual(); // reata observer al nuevo nodo
+
+      const prev = visualNode;
+      const next = pickBestVisualNode() || prev;
+
+      if (next && next !== prev) {
+        visualNode = next;
+        startVisual();
+      }
     }, CFG.visualReselectMs);
   }
 
   function restartPipeline() {
-    // no apaga la extensión: solo reinicia lectura/enganche
     try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
     currentTrack = null;
+
     stopVisualObserver();
     visualNode = null;
     visualSelectors = null;
-    ultimoTexto = "";
-    ultimoEmitAt = 0;
+
+    lastEmitText = "";
+    lastEmitAt = 0;
+
     rehookTick();
     updateOverlayStatus();
   }
@@ -1060,7 +1049,6 @@ effectiveFuente =
       notify(`🟢 KathWare ON — ${label}`);
       startTimers();
       rehookTick();
-      // En Flow abrimos panel por defecto (porque normalmente es “modo control”)
       if (p === "flow") setPanelOpen(true);
     } else {
       notify(`🔴 KathWare OFF — ${label}`);
@@ -1068,7 +1056,7 @@ effectiveFuente =
     }
   }
 
-  // -------------------- Hotkeys: fallback in-page --------------------
+  // -------------------- Hotkeys fallback in-page --------------------
   function matchHotkey(e, hk) {
     const key = (e.key || "").toLowerCase();
     return (
@@ -1080,7 +1068,6 @@ effectiveFuente =
   }
 
   document.addEventListener("keydown", (e) => {
-    // 1) Hotkeys del engine (con Ctrl/Alt/etc.)
     if (matchHotkey(e, CFG.hotkeys.toggle)) {
       e.preventDefault();
       e.stopPropagation();
@@ -1090,11 +1077,10 @@ effectiveFuente =
     if (matchHotkey(e, CFG.hotkeys.mode)) {
       e.preventDefault();
       e.stopPropagation();
-      // cycle modoNarradorGlobal: lector -> sintetizador -> off -> lector
       const order = ["lector", "sintetizador", "off"];
       const i = order.indexOf(modoNarradorGlobal);
       modoNarradorGlobal = order[(i + 1) % order.length];
-      if (api?.storage?.local) api.storage.local.set({ modoNarrador: modoNarradorGlobal });
+      api?.storage?.local?.set?.({ modoNarrador: modoNarradorGlobal });
       notify(`Modo: ${modoNarradorGlobal}`);
       updateOverlayStatus();
       return;
@@ -1107,7 +1093,6 @@ effectiveFuente =
       return;
     }
 
-    // 2) Controles tipo HTML5 (sin modifiers) cuando aplica
     if (handlePlayerHotkeys(e)) return;
   }, true);
 
@@ -1135,8 +1120,8 @@ effectiveFuente =
           const idx = Number(message.index);
           if (Number.isFinite(idx)) {
             trackIndexGlobal = idx;
-            if (api?.storage?.local) api.storage.local.set({ trackIndex: trackIndexGlobal });
-            if (extensionActiva) startTrack();
+            api?.storage?.local?.set?.({ trackIndex: trackIndexGlobal });
+            if (extensionActiva) restartPipeline();
             updateOverlayTracksList();
             updateOverlayStatus();
           }
@@ -1178,7 +1163,6 @@ effectiveFuente =
     currentVideo = getMainVideo();
     updateOverlayTracksList();
     updateOverlayStatus();
-    // Por defecto NO encendemos solos: el user decide
     log("content.js listo en", location.hostname, "plataforma:", getPlatform());
   });
 })();
