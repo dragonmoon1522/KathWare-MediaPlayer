@@ -847,11 +847,12 @@ function pollVisualTick() {
 
   function rehookTick() {
     const v = getMainVideo();
-lastTrackSeen = "";
-lastVisualSeen = "";
+
 
     if (v !== currentVideo) {
       currentVideo = v;
+      lastTrackSeen = "";
+lastVisualSeen = "";
       try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
       currentTrack = null;
 
@@ -1069,7 +1070,7 @@ lastVisualSeen = "";
 
     lastEmitText = "";
     lastEmitAt = 0;
-
+effectiveFuente = "visual"; // default safe
     rehookTick();
     updateOverlayStatus();
   }
@@ -1087,6 +1088,7 @@ lastVisualSeen = "";
       cargarVozES();
       notify(`🟢 KathWare ON — ${label}`);
       startTimers();
+      effectiveFuente = "visual"; // default safe
       rehookTick();
       if (p === "flow") setPanelOpen(true);
     } else {
