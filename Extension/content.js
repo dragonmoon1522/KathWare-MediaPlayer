@@ -99,6 +99,9 @@
   // Dedupe
   let lastEmitText = "";
   let lastEmitAt = 0;
+// --- Per-source change detection (NO repetir si el cue sigue activo) ---
+let lastTrackSeen = "";
+let lastVisualSeen = "";
 
   // -------------------- Utils --------------------
   const normalize = (s) =>
@@ -604,21 +607,32 @@
   }
 
   function attachTrack(track) {
-    if (!track) return;
-    try { if (track.mode === "disabled") track.mode = "hidden"; } catch (_) {}
-    try { track.oncuechange = null; } catch (_) {}
+  if (!track) return;
+  try { if (track.mode === "disabled") track.mode = "hidden"; } catch (_) {}
+  try { track.oncuechange = null; } catch (_) {}
 
-    track.oncuechange = () => {
-      if (!shouldReadNow()) return;
-      if (effectiveFuente !== "track") return;
+  track.oncuechange = () => {
+    if (!shouldReadNow()) return;
+    if (effectiveFuente !== "track") return;
 
-      const txt = readActiveCues(track);
-      if (txt) leerTextoAccesible(txt);
-    };
+    const txt = readActiveCues(track);
+    if (!txt) return;
 
-    const initial = readActiveCues(track);
-    if (initial) leerTextoAccesible(initial);
+    // ✅ emit only on change
+    if (txt === lastTrackSeen) return;
+    lastTrackSeen = txt;
+
+    leerTextoAccesible(txt);
+  };
+
+  // Emit inicial SOLO si es distinto
+  const initial = readActiveCues(track);
+  if (initial && initial !== lastTrackSeen) {
+    lastTrackSeen = initial;
+    leerTextoAccesible(initial);
   }
+}
+
 
   function startTrack() {
     const v = currentVideo;
@@ -653,13 +667,20 @@
   }
 
   function pollTrackTick() {
-    if (!shouldReadNow()) return;
-    if (effectiveFuente !== "track") return;
-    if (!currentTrack) return;
+  if (!shouldReadNow()) return;
+  if (effectiveFuente !== "track") return;
+  if (!currentTrack) return;
 
-    const txt = readActiveCues(currentTrack);
-    if (txt) leerTextoAccesible(txt);
-  }
+  const txt = readActiveCues(currentTrack);
+  if (!txt) return;
+
+  // ✅ poll = solo fallback, jamás repite lo mismo
+  if (txt === lastTrackSeen) return;
+  lastTrackSeen = txt;
+
+  leerTextoAccesible(txt);
+}
+
 
   // -------------------- VISUAL pipeline --------------------
   function platformSelectors(p) {
@@ -750,55 +771,68 @@
   }
 
   function startVisual() {
-    const p = getPlatform();
-    visualSelectors = platformSelectors(p);
+  const p = getPlatform();
+  visualSelectors = platformSelectors(p);
 
-    const next = pickBestVisualNode();
-    if (next) visualNode = next;
+  const next = pickBestVisualNode();
+  if (next) visualNode = next;
 
-    stopVisualObserver();
+  stopVisualObserver();
 
-    if (visualNode) {
-      try {
-        visualObserver = new MutationObserver(() => {
-          if (!shouldReadNow()) return;
-          if (effectiveFuente !== "visual") return;
+  if (visualNode) {
+    try {
+      visualObserver = new MutationObserver(() => {
+        if (!shouldReadNow()) return;
+        if (effectiveFuente !== "visual") return;
 
-          const t = normalize(visualNode?.textContent);
-          if (!looksLikeNoise(visualNode, t)) leerTextoAccesible(t);
-        });
+        const t = normalize(visualNode?.textContent);
+        if (!t) return;
+        if (looksLikeNoise(visualNode, t)) return;
 
-        visualObserver.observe(visualNode, { childList: true, subtree: true, characterData: true });
-        visualObserverActive = true;
-      } catch (_) {
-        visualObserverActive = false;
-      }
+        // ✅ emit only on change
+        if (t === lastVisualSeen) return;
+        lastVisualSeen = t;
+
+        leerTextoAccesible(t);
+      });
+
+      visualObserver.observe(visualNode, { childList: true, subtree: true, characterData: true });
+      visualObserverActive = true;
+    } catch (_) {
+      visualObserverActive = false;
     }
-
-    updateOverlayStatus();
-    log("VISUAL activo:", p);
   }
 
-  function pollVisualTick() {
-    if (!shouldReadNow()) return;
-    if (effectiveFuente !== "visual") return;
+  updateOverlayStatus();
+  log("VISUAL activo:", p);
+}
 
-    if (!visualSelectors) visualSelectors = platformSelectors(getPlatform());
+function pollVisualTick() {
+  if (!shouldReadNow()) return;
+  if (effectiveFuente !== "visual") return;
 
-    // re-selección si no hay nodo
-    if (!visualNode) {
-      visualNode = pickBestVisualNode();
-      if (visualNode) startVisual();
-      return;
-    }
+  if (!visualSelectors) visualSelectors = platformSelectors(getPlatform());
 
-    // Si observer está activo, poll no emite (evita duplicados)
-    if (visualObserverActive) return;
-
-    // Fallback: solo si no hay observer
-    const t = normalize(visualNode.textContent);
-    if (!looksLikeNoise(visualNode, t)) leerTextoAccesible(t);
+  if (!visualNode) {
+    visualNode = pickBestVisualNode();
+    if (visualNode) startVisual();
+    return;
   }
+
+  // Si observer está activo, el poll no emite
+  if (visualObserverActive) return;
+
+  const t = normalize(visualNode.textContent);
+  if (!t) return;
+  if (looksLikeNoise(visualNode, t)) return;
+
+  // ✅ poll = solo cambio
+  if (t === lastVisualSeen) return;
+  lastVisualSeen = t;
+
+  leerTextoAccesible(t);
+}
+
 
   // -------------------- Rehook --------------------
   function computeSignature(v, t) {
@@ -813,6 +847,8 @@
 
   function rehookTick() {
     const v = getMainVideo();
+lastTrackSeen = "";
+lastVisualSeen = "";
 
     if (v !== currentVideo) {
       currentVideo = v;
@@ -1027,6 +1063,9 @@
     stopVisualObserver();
     visualNode = null;
     visualSelectors = null;
+
+lastTrackSeen = "";
+lastVisualSeen = "";
 
     lastEmitText = "";
     lastEmitAt = 0;
