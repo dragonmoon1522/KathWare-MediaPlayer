@@ -619,7 +619,14 @@ function shouldEmit(t) {
 
     const best = pickBestTrack(v);
     if (best !== currentTrack) {
-      currentTrack = best;
+      
+      if (!trackSeemsUsable(best)) {
+  log("TRACK no usable, fallback a VISUAL:", describeTrack(best));
+  currentTrack = null;
+  updateOverlayStatus();
+  return false;
+}
+currentTrack = best;
       attachTrack(best);
       updateOverlayTracksList();
       updateOverlayStatus();
@@ -789,12 +796,43 @@ function shouldEmit(t) {
 
     if (!extensionActiva) return;
 
+function trackSeemsUsable(track) {
+  if (!track) return false;
+
+  // Si no está en showing/hidden, lo intentamos activar
+  try {
+    if (track.mode === "disabled") track.mode = "hidden";
+  } catch (_) {}
+
+  // Test de acceso a activeCues/cues (Netflix a veces rompe esto)
+  try {
+    const txt = readActiveCues(track);
+    if (txt && txt.length > 0) return true;
+
+    // cues length a veces existe aunque activeCues esté vacío
+    const len = track.cues ? track.cues.length : 0;
+    if (len && len > 0) return true;
+  } catch (_) {
+    return false;
+  }
+
+  return false;
+}
+
+function videoHasUsableTracks(video) {
+  const list = Array.from(video?.textTracks || []);
+  if (!list.length) return false;
+  return list.some(t => trackSeemsUsable(t));
+}
+
+
     // Fuente auto: preferir track si existe
-    const hasTracks = !!(currentVideo?.textTracks && currentVideo.textTracks.length);
-    const effectiveFuente =
-      fuenteSubGlobal === "auto"
-        ? (hasTracks ? "track" : "visual")
-        : fuenteSubGlobal;
+    const hasUsableTracks = videoHasUsableTracks(currentVideo);
+effectiveFuente =
+  fuenteSubGlobal === "auto"
+    ? (hasUsableTracks ? "track" : "visual")
+    : fuenteSubGlobal;
+
 
     // Aplicar effective fuente (sin pisar el setting guardado)
     // (esto solo guía al pipeline)
