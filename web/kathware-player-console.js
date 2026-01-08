@@ -19,7 +19,12 @@
   };
 
   const log = (...a) => CFG.debug && console.log("[KW]", ...a);
-  const normalize = (s) => String(s ?? "").replace(/\u00A0/g, " ").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  const normalize = (s) =>
+    String(s ?? "")
+      .replace(/\u00A0/g, " ")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
   const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
 
   let active = false;
@@ -260,21 +265,61 @@
     };
   };
 
-  // Flow in-place labeling
-  const normName = (el) => normalize(el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || el.textContent || "");
+  // ----------------------------------------------------------
+  // Flow in-place labeling (dinámico + fallbacks icon-only)
+  // ----------------------------------------------------------
   const isVisibleEl = (el) => {
     if (!el?.getBoundingClientRect) return false;
     const r = el.getBoundingClientRect();
     if (r.width < 14 || r.height < 14) return false;
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity || 1) < 0.05) return false;
+    if (cs.pointerEvents === "none") return false;
     return true;
   };
+
   const intersectsVideo = (el, vr) => {
     const r = el.getBoundingClientRect();
     const x = Math.max(0, Math.min(vr.right, r.right) - Math.max(vr.left, r.left));
     const y = Math.max(0, Math.min(vr.bottom, r.bottom) - Math.max(vr.top, r.top));
     return (x * y) > 120;
+  };
+
+  const visibleText = (el) => {
+    // ojo: innerText suele respetar visibilidad; textContent no.
+    const t = normalize(el?.innerText || el?.textContent || "");
+    return t;
+  };
+
+  const guessIconOnlyLabel = (testId, cls) => {
+    const blob = normalize(`${testId} ${cls}`).toLowerCase();
+    if (testId === "volume-btn" || blob.includes("volume") || blob.includes("mute")) return "Volumen / Silenciar";
+    if (testId === "cast-btn" || blob.includes("cast") || blob.includes("chromecast")) return "Transmitir (Cast)";
+    if (testId === "full-screen-btn" || blob.includes("full") || blob.includes("screen")) return "Pantalla completa";
+    if (testId === "audio-subtitle-btn" || blob.includes("subtitle") || blob.includes("audio")) return "Audio y subtítulos";
+    if (testId === "more-emissions-btn" || blob.includes("emission") || blob.includes("episod")) return "Ir a episodios";
+    if (testId === "back-btn" || blob.includes("back")) return "Volver";
+    return "Control del reproductor";
+  };
+
+  const applyA11yLabel = (el, label) => {
+    if (!el) return 0;
+    const t = normalize(label);
+    if (!t) return 0;
+
+    // Marcamos que fue autolabel para poder actualizarlo si cambia el texto
+    const prev = el.getAttribute("aria-label") || "";
+    const prevAuto = el.getAttribute("data-kw-autolabel") === "1";
+
+    // Si no hay aria-label, o si fue autolabel nuestro, lo actualizamos siempre
+    if (!prev || prevAuto) {
+      el.setAttribute("aria-label", t);
+      el.setAttribute("data-kw-autolabel", "1");
+    }
+
+    if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+    if (!el.getAttribute("role")) el.setAttribute("role", "button");
+    return 1;
   };
 
   const labelFlowControls = () => {
@@ -283,55 +328,24 @@
     if (!v) return 0;
     const vr = v.getBoundingClientRect();
 
-    const all = Array.from(document.querySelectorAll("button,[role='button'],[tabindex]"))
+    const all = Array.from(document.querySelectorAll("button,[role='button'],[tabindex],[data-testid]"))
       .filter(el => isVisibleEl(el) && intersectsVideo(el, vr));
 
-    const items = all.map(el => {
-      const r = el.getBoundingClientRect();
-      return { el, cx: r.left + r.width/2, cy: r.top + r.height/2, w: r.width, h: r.height, name: normName(el), testId: el.getAttribute("data-testid") || "", cls: String(el.className||"") };
-    });
-
-    items.sort((a,b) => a.cy - b.cy);
-    const rows = [];
-    for (const it of items) {
-      let placed = false;
-      for (const row of rows) {
-        if (Math.abs(row.cy - it.cy) < 16) { row.items.push(it); row.cy = (row.cy + it.cy)/2; placed = true; break; }
-      }
-      if (!placed) rows.push({ cy: it.cy, items: [it] });
-    }
-    rows.forEach(r => r.items.sort((a,b)=>a.cx-b.cx));
-
     let labeled = 0;
-    for (const row of rows) {
-      const big = row.items.filter(x => x.w >= 60 && x.h >= 32 && x.w <= 110);
-      if (big.length >= 3) {
-        const labels = ["Reiniciar","Atrasar 10 segundos","Pausar/Reproducir","Adelantar 10 segundos","Episodio siguiente"];
-        big.sort((a,b)=>a.cx-b.cx);
-        for (let i=0;i<big.length && i<labels.length;i++){
-          if (big[i].name) continue;
-          big[i].el.setAttribute("aria-label", labels[i]);
-          big[i].el.setAttribute("tabindex", big[i].el.getAttribute("tabindex") || "0");
-          big[i].el.setAttribute("role", big[i].el.getAttribute("role") || "button");
-          labeled++;
-        }
-      }
+
+    for (const el of all) {
+      // 1) Si tiene texto visible => eso manda (y se mantiene actualizado)
+      const txt = visibleText(el);
+
+      // 2) Si no hay texto visible, fallback por testid/clase
+      const testId = el.getAttribute("data-testid") || "";
+      const cls = String(el.className || "");
+
+      const label = txt || guessIconOnlyLabel(testId, cls);
+
+      labeled += applyA11yLabel(el, label);
     }
 
-    for (const row of rows) {
-      const small = row.items.filter(x => x.w <= 60 && x.h <= 60);
-      if (small.length >= 3) {
-        for (const s of small) {
-          if (s.name) continue;
-          let label = "Control del reproductor";
-          if (s.testId === "volume-btn") label = "Volumen / Silenciar";
-          s.el.setAttribute("aria-label", label);
-          s.el.setAttribute("tabindex", s.el.getAttribute("tabindex") || "0");
-          s.el.setAttribute("role", s.el.getAttribute("role") || "button");
-          labeled++;
-        }
-      }
-    }
     return labeled;
   };
 
@@ -355,10 +369,13 @@
 
     if (getPlatform() === "flow") {
       const n = labelFlowControls();
-      if (n && CFG.debug) console.log("[KW] FlowMode: etiqueté", n, "controles del player.");
+      if (CFG.debug) console.log("[KW] FlowMode:", { mode: "dynamic-label", labeled: n, hasVideo: !!v });
     }
   };
 
+  // ----------------------------------------------------------
+  // UI
+  // ----------------------------------------------------------
   const buildUI = () => {
     if (overlayRoot) return;
 
@@ -381,8 +398,10 @@
 
     overlayModo = document.createElement("select");
     overlayModo.innerHTML = `<option value="off">Desactivado</option><option value="sintetizador">Voz</option><option value="lector">Lector</option>`;
+
     overlayFuente = document.createElement("select");
     overlayFuente.innerHTML = `<option value="auto">Auto</option><option value="track">TRACK</option><option value="visual">VISUAL</option>`;
+
     overlayTrackSel = document.createElement("select");
     overlayTrackSel.innerHTML = `<option value="0">Pista 1</option>`;
 
@@ -402,7 +421,7 @@
     Object.assign(overlayPill.style, { width:"46px", height:"46px", borderRadius:"999px", border:"0", cursor:"pointer", background:"rgba(0,0,0,0.78)", color:"#fff", fontWeight:"700", boxShadow:"0 8px 24px rgba(0,0,0,0.25)" });
 
     overlayPill.onclick = () => (overlayPanel.style.display = overlayPanel.style.display === "none" ? "block" : "none");
-    overlayModo.onchange = () => { modo = overlayModo.value; log("Modo =>", modo); };
+    overlayModo.onchange = () => { modo = overlayModo.value; log("Modo =>", modo); updateUI(); };
     overlayFuente.onchange = () => { fuente = overlayFuente.value; restart(); log("Fuente =>", fuente); };
     overlayTrackSel.onchange = () => { trackIndex = Number(overlayTrackSel.value)||0; restart(); };
 
@@ -422,7 +441,7 @@
     if (!overlayRoot) return;
     overlayModo.value = modo;
     overlayFuente.value = fuente;
-    overlayStatus.textContent = `${active ? "🟢 ON" : "🔴 OFF"} | ${fuente}→${effectiveFuente} | ${getPlatform()}`;
+    overlayStatus.textContent = `${active ? "🟢 ON" : "🔴 OFF"} | ${fuente}→${effectiveFuente} | ${getPlatform()} | Hotkey: Ctrl+Alt+K`;
   };
 
   const restart = () => {
@@ -500,7 +519,7 @@
       cargarVozES();
       startTimers();
       rehookTick();
-      log("ON ✅  Hotkey: Ctrl+Shift+K (toggle UI+engine)");
+      log("ON ✅  Hotkey: Ctrl+Alt+K (toggle UI+engine)");
     } else {
       stopTimers();
       stopVisualObs();
@@ -514,7 +533,7 @@
   };
 
   const onKey = (e) => {
-    if (e.ctrlKey && e.shiftKey && (e.key || "").toLowerCase() === "k") {
+    if (e.ctrlKey && e.altKey && (e.key || "").toLowerCase() === "k") {
       e.preventDefault();
       e.stopPropagation();
       toggle();
@@ -529,5 +548,5 @@
     console.log("[KW] stop ok.");
   };
 
-  console.log("[KW] listo. Hotkey: Ctrl+Shift+K  | stop: window.__KW_CONSOLE_PLAYER__.stop()");
+  console.log("[KW] listo. Hotkey: Ctrl+Alt+K  | stop: window.__KW_CONSOLE_PLAYER__.stop()");
 })();
