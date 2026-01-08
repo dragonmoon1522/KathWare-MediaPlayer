@@ -3,9 +3,10 @@
 // Engine v4-ish (rehook + polling + overlay pill + TRACK/VISUAL)
 // - TRACK: lee video.textTracks (oncuechange + poll activeCues fallback)
 // - VISUAL: lee captions por selectores por plataforma + observer (poll solo fallback)
-// - Overlay: pill siempre disponible, panel se expande con subtítulos o click
-// - Controles de teclado estilo HTML5 cuando aplica (no secuestra al escribir)
-// - ON/OFF: via command (background) + fallback hotkey in-page (configurable)
+// - Overlay: SOLO visible cuando usuario activa (Ctrl+Shift+K o command)
+// - KeepControls: mantiene visibles controles de reproductores “tímidos” (Flow/Max/Netflix)
+// - Flow A11y: etiqueta controles nativos del reproductor (in-place)
+// - ON/OFF: via command (background) + fallback hotkey in-page (Ctrl+Shift+K)
 // Compat: Chromium (chrome.*) + Firefox (browser.*)
 // ====================================================
 
@@ -27,21 +28,26 @@
     pollMsVisual: 450,
     cooldownMs: 650,
     burstMs: 450,
-
-    // Visual reselect (para SPA que recrea captions)
     visualReselectMs: 1200,
+
+    // keep controls
+    keepControlsMs: 850,
 
     // keyboard controls
     seekSmall: 5,
     seekBig: 10,
     volStep: 0.05,
 
-    // Hotkey fallback in-page (por si commands no está o choca)
+    // Hotkey fallback in-page (si commands no está o choca)
+    // PEDIDO: Ctrl+Shift+K
     hotkeys: {
-      toggle: { ctrl: true, alt: true, shift: false, key: "k" },
-      mode:   { ctrl: true, alt: true, shift: false, key: "l" },
-      panel:  { ctrl: true, alt: true, shift: false, key: "o" },
+      toggle: { ctrl: true, alt: false, shift: true, key: "k" },
+      mode:   { ctrl: true, alt: true,  shift: false, key: "l" },
+      panel:  { ctrl: true, alt: true,  shift: false, key: "o" },
     },
+
+    // UI behavior
+    autoOpenPanelOnSubs: false, // (antes auto-expand; ahora NO para no confundir)
   };
 
   const log = (...a) => CFG.debug && console.log("[KathWare]", ...a);
@@ -56,8 +62,7 @@
   let fuenteSubGlobal = "auto";
   let trackIndexGlobal = 0;
 
-  // Fuente efectiva real (pipeline)
-  // "track" | "visual"
+  // Fuente efectiva real
   let effectiveFuente = "visual";
 
   // Voice
@@ -75,6 +80,8 @@
   let rehookTimer = null;
   let pollTimerVisual = null;
   let visualReselectTimer = null;
+  let keepControlsTimer = null;
+
   let visualObserver = null;
   let visualObserverActive = false;
 
@@ -99,9 +106,13 @@
   // Dedupe
   let lastEmitText = "";
   let lastEmitAt = 0;
-// --- Per-source change detection (NO repetir si el cue sigue activo) ---
-let lastTrackSeen = "";
-let lastVisualSeen = "";
+
+  // Per-source change detection
+  let lastTrackSeen = "";
+  let lastVisualSeen = "";
+
+  // Flow labeling
+  let flowLabelTimer = null;
 
   // -------------------- Utils --------------------
   const normalize = (s) =>
@@ -174,16 +185,37 @@ let lastVisualSeen = "";
   }
 
   // -------------------- Voice / LiveRegion --------------------
+  function listVoicesDebug() {
+    try {
+      if (typeof speechSynthesis === "undefined") return { ok: false, reason: "speechSynthesis undefined" };
+      const voces = speechSynthesis.getVoices() || [];
+      return {
+        ok: true,
+        count: voces.length,
+        langs: voces.slice(0, 15).map(v => v.lang).filter(Boolean)
+      };
+    } catch (e) {
+      return { ok: false, reason: String(e?.message || e) };
+    }
+  }
+
   function cargarVozES() {
     try {
       if (typeof speechSynthesis === "undefined") return;
       const voces = speechSynthesis.getVoices() || [];
-      voiceES = voces.find(v => v.lang && v.lang.startsWith("es")) || null;
+      // preferimos es-AR si existe, sino cualquier es
+      voiceES =
+        voces.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
+        voces.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
+        null;
 
       if (!voiceES) {
         speechSynthesis.onvoiceschanged = () => {
           const v2 = speechSynthesis.getVoices() || [];
-          voiceES = v2.find(v => v.lang && v.lang.startsWith("es")) || null;
+          voiceES =
+            v2.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
+            v2.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
+            null;
         };
       }
     } catch (_) {}
@@ -228,20 +260,39 @@ let lastVisualSeen = "";
 
   function pushToLiveRegion(texto) {
     const lr = asegurarLiveRegion();
+    // edge-trigger para NVDA/JAWS
     lr.textContent = "";
     setTimeout(() => { lr.textContent = texto; }, 10);
   }
 
   function speakTTS(texto) {
-    if (typeof speechSynthesis === "undefined") return;
-    if (!voiceES) return;
     try {
+      if (typeof speechSynthesis === "undefined") return { ok: false, reason: "speechSynthesis undefined" };
+      cargarVozES();
+      if (!voiceES) return { ok: false, reason: "No encuentro voz ES (getVoices vacío o sin es-*)" };
+
       speechSynthesis.cancel();
+
       const u = new SpeechSynthesisUtterance(texto);
       u.voice = voiceES;
       u.lang = voiceES.lang || "es-AR";
+
+      // debug hooks
+      u.onend = () => CFG.debug && console.log("[KathWare] TTS end");
+      u.onerror = (ev) => CFG.debug && console.warn("[KathWare] TTS error:", ev?.error || ev);
+
       speechSynthesis.speak(u);
-    } catch (_) {}
+
+      return {
+        ok: true,
+        selectedLang: voiceES.lang,
+        speaking: !!speechSynthesis.speaking,
+        pending: !!speechSynthesis.pending,
+        paused: !!speechSynthesis.paused
+      };
+    } catch (e) {
+      return { ok: false, reason: String(e?.message || e) };
+    }
   }
 
   function shouldReadNow() {
@@ -264,14 +315,34 @@ let lastVisualSeen = "";
     if (modoNarradorGlobal === "off") return;
     if (!shouldReadNow()) return;
 
-    if (modoNarradorGlobal === "lector") pushToLiveRegion(t);
-    else if (modoNarradorGlobal === "sintetizador") speakTTS(t);
+    if (modoNarradorGlobal === "lector") {
+      pushToLiveRegion(t);
+      return;
+    }
+
+    if (modoNarradorGlobal === "sintetizador") {
+      const res = speakTTS(t);
+      if (!res.ok) {
+        // debug de por qué no lee
+        console.warn("[KathWare] TTS FALLÓ:", res);
+        console.warn("[KathWare] Voices debug:", listVoicesDebug());
+        try {
+          console.warn("[KathWare] speechSynthesis state:", {
+            speaking: speechSynthesis.speaking,
+            pending: speechSynthesis.pending,
+            paused: speechSynthesis.paused
+          });
+        } catch {}
+      } else {
+        CFG.debug && console.log("[KathWare] TTS OK:", res);
+      }
+    }
   }
 
   // -------------------- Toast --------------------
   function notify(msg) {
     // A11y
-    pushToLiveRegion(msg);
+    if (extensionActiva) pushToLiveRegion(msg);
 
     try {
       if (!toastEl) {
@@ -303,7 +374,19 @@ let lastVisualSeen = "";
     } catch (_) {}
   }
 
-  // -------------------- Overlay --------------------
+  // -------------------- Overlay (solo cuando está activo) --------------------
+  function destroyOverlay() {
+    try { overlayRoot?.remove?.(); } catch (_) {}
+    overlayRoot = null;
+    overlayPanel = null;
+    overlayPill = null;
+    overlayStatus = null;
+    overlayText = null;
+    overlayTrackSelect = null;
+    overlayModoSelect = null;
+    overlayFuenteSelect = null;
+  }
+
   function ensureOverlay() {
     if (overlayRoot) return;
 
@@ -388,7 +471,6 @@ let lastVisualSeen = "";
       return b;
     };
 
-    const btnToggle = mkBtn("ON/OFF", () => toggleExtension());
     const btnPlay   = mkBtn("▶️", () => currentVideo?.play?.());
     const btnPause  = mkBtn("⏸️", () => currentVideo?.pause?.());
     const btnBack   = mkBtn("⏪", () => seekBy(-CFG.seekBig));
@@ -398,7 +480,6 @@ let lastVisualSeen = "";
     const btnFull   = mkBtn("⛶", () => requestFull());
     const btnClose  = mkBtn("Cerrar", () => setPanelOpen(false));
 
-    controlsRow.appendChild(btnToggle);
     controlsRow.appendChild(btnPlay);
     controlsRow.appendChild(btnPause);
     controlsRow.appendChild(btnBack);
@@ -470,9 +551,10 @@ let lastVisualSeen = "";
   }
 
   function updateOverlayText(text) {
-    ensureOverlay();
+    if (!overlayRoot) return;
     overlayText.textContent = text || "";
-    if (text && text.trim()) setPanelOpen(true); // auto-expand cuando hay subtítulos
+    // pedido: NO auto-open para no confundir
+    if (CFG.autoOpenPanelOnSubs && text && text.trim()) setPanelOpen(true);
   }
 
   function describeTrack(t) {
@@ -483,7 +565,7 @@ let lastVisualSeen = "";
   }
 
   function updateOverlayTracksList() {
-    ensureOverlay();
+    if (!overlayRoot) return;
     const v = currentVideo;
     const tracks = v?.textTracks ? Array.from(v.textTracks) : [];
     overlayTrackSelect.innerHTML = "";
@@ -509,7 +591,7 @@ let lastVisualSeen = "";
   }
 
   function updateOverlayStatus() {
-    ensureOverlay();
+    if (!overlayRoot) return;
     const p = getPlatform();
     const label = platformLabel(p);
 
@@ -607,32 +689,29 @@ let lastVisualSeen = "";
   }
 
   function attachTrack(track) {
-  if (!track) return;
-  try { if (track.mode === "disabled") track.mode = "hidden"; } catch (_) {}
-  try { track.oncuechange = null; } catch (_) {}
+    if (!track) return;
+    try { if (track.mode === "disabled") track.mode = "hidden"; } catch (_) {}
+    try { track.oncuechange = null; } catch (_) {}
 
-  track.oncuechange = () => {
-    if (!shouldReadNow()) return;
-    if (effectiveFuente !== "track") return;
+    track.oncuechange = () => {
+      if (!shouldReadNow()) return;
+      if (effectiveFuente !== "track") return;
 
-    const txt = readActiveCues(track);
-    if (!txt) return;
+      const txt = readActiveCues(track);
+      if (!txt) return;
 
-    // ✅ emit only on change
-    if (txt === lastTrackSeen) return;
-    lastTrackSeen = txt;
+      if (txt === lastTrackSeen) return;
+      lastTrackSeen = txt;
 
-    leerTextoAccesible(txt);
-  };
+      leerTextoAccesible(txt);
+    };
 
-  // Emit inicial SOLO si es distinto
-  const initial = readActiveCues(track);
-  if (initial && initial !== lastTrackSeen) {
-    lastTrackSeen = initial;
-    leerTextoAccesible(initial);
+    const initial = readActiveCues(track);
+    if (initial && initial !== lastTrackSeen) {
+      lastTrackSeen = initial;
+      leerTextoAccesible(initial);
+    }
   }
-}
-
 
   function startTrack() {
     const v = currentVideo;
@@ -667,23 +746,29 @@ let lastVisualSeen = "";
   }
 
   function pollTrackTick() {
-  if (!shouldReadNow()) return;
-  if (effectiveFuente !== "track") return;
-  if (!currentTrack) return;
+    if (!shouldReadNow()) return;
+    if (effectiveFuente !== "track") return;
+    if (!currentTrack) return;
 
-  const txt = readActiveCues(currentTrack);
-  if (!txt) return;
+    const txt = readActiveCues(currentTrack);
+    if (!txt) return;
 
-  // ✅ poll = solo fallback, jamás repite lo mismo
-  if (txt === lastTrackSeen) return;
-  lastTrackSeen = txt;
+    if (txt === lastTrackSeen) return;
+    lastTrackSeen = txt;
 
-  leerTextoAccesible(txt);
-}
-
+    leerTextoAccesible(txt);
+  }
 
   // -------------------- VISUAL pipeline --------------------
   function platformSelectors(p) {
+    if (p === "flow") {
+      // THEOplayer en Flow
+      return [
+        ".theoplayer-ttml-texttrack-",
+        ".theoplayer-texttracks",
+        ".theoplayer-texttracks *"
+      ];
+    }
     if (p === "max") {
       return [
         "[data-testid='cueBoxRowTextCue']",
@@ -756,6 +841,10 @@ let lastVisualSeen = "";
     }
     if (!nodes.length) return null;
 
+    // preferimos el contenedor TTML si existe
+    const theoTTML = nodes.find(n => (n.className || "").toString().includes("theoplayer-ttml-texttrack-"));
+    if (theoTTML) return theoTTML;
+
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
       const t = normalize(n?.textContent);
@@ -771,68 +860,64 @@ let lastVisualSeen = "";
   }
 
   function startVisual() {
-  const p = getPlatform();
-  visualSelectors = platformSelectors(p);
+    const p = getPlatform();
+    visualSelectors = platformSelectors(p);
 
-  const next = pickBestVisualNode();
-  if (next) visualNode = next;
+    const next = pickBestVisualNode();
+    if (next) visualNode = next;
 
-  stopVisualObserver();
+    stopVisualObserver();
 
-  if (visualNode) {
-    try {
-      visualObserver = new MutationObserver(() => {
-        if (!shouldReadNow()) return;
-        if (effectiveFuente !== "visual") return;
+    if (visualNode) {
+      try {
+        visualObserver = new MutationObserver(() => {
+          if (!shouldReadNow()) return;
+          if (effectiveFuente !== "visual") return;
 
-        const t = normalize(visualNode?.textContent);
-        if (!t) return;
-        if (looksLikeNoise(visualNode, t)) return;
+          const t = normalize(visualNode?.textContent);
+          if (!t) return;
+          if (looksLikeNoise(visualNode, t)) return;
 
-        // ✅ emit only on change
-        if (t === lastVisualSeen) return;
-        lastVisualSeen = t;
+          if (t === lastVisualSeen) return;
+          lastVisualSeen = t;
 
-        leerTextoAccesible(t);
-      });
+          leerTextoAccesible(t);
+        });
 
-      visualObserver.observe(visualNode, { childList: true, subtree: true, characterData: true });
-      visualObserverActive = true;
-    } catch (_) {
-      visualObserverActive = false;
+        visualObserver.observe(visualNode, { childList: true, subtree: true, characterData: true });
+        visualObserverActive = true;
+      } catch (_) {
+        visualObserverActive = false;
+      }
     }
+
+    updateOverlayStatus();
+    log("VISUAL activo:", p);
   }
 
-  updateOverlayStatus();
-  log("VISUAL activo:", p);
-}
+  function pollVisualTick() {
+    if (!shouldReadNow()) return;
+    if (effectiveFuente !== "visual") return;
 
-function pollVisualTick() {
-  if (!shouldReadNow()) return;
-  if (effectiveFuente !== "visual") return;
+    if (!visualSelectors) visualSelectors = platformSelectors(getPlatform());
 
-  if (!visualSelectors) visualSelectors = platformSelectors(getPlatform());
+    if (!visualNode) {
+      visualNode = pickBestVisualNode();
+      if (visualNode) startVisual();
+      return;
+    }
 
-  if (!visualNode) {
-    visualNode = pickBestVisualNode();
-    if (visualNode) startVisual();
-    return;
+    if (visualObserverActive) return;
+
+    const t = normalize(visualNode.textContent);
+    if (!t) return;
+    if (looksLikeNoise(visualNode, t)) return;
+
+    if (t === lastVisualSeen) return;
+    lastVisualSeen = t;
+
+    leerTextoAccesible(t);
   }
-
-  // Si observer está activo, el poll no emite
-  if (visualObserverActive) return;
-
-  const t = normalize(visualNode.textContent);
-  if (!t) return;
-  if (looksLikeNoise(visualNode, t)) return;
-
-  // ✅ poll = solo cambio
-  if (t === lastVisualSeen) return;
-  lastVisualSeen = t;
-
-  leerTextoAccesible(t);
-}
-
 
   // -------------------- Rehook --------------------
   function computeSignature(v, t) {
@@ -848,11 +933,10 @@ function pollVisualTick() {
   function rehookTick() {
     const v = getMainVideo();
 
-
     if (v !== currentVideo) {
       currentVideo = v;
       lastTrackSeen = "";
-lastVisualSeen = "";
+      lastVisualSeen = "";
       try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
       currentTrack = null;
 
@@ -864,9 +948,6 @@ lastVisualSeen = "";
       updateOverlayStatus();
     }
 
-    ensureOverlay();
-    updateOverlayStatus();
-
     if (!extensionActiva) return;
 
     const hasUsableTracks = videoHasUsableTracks(currentVideo);
@@ -876,7 +957,6 @@ lastVisualSeen = "";
         ? (hasUsableTracks ? "track" : "visual")
         : (fuenteSubGlobal === "track" ? "track" : "visual");
 
-    // mutear pipeline que no corresponde
     if (effectiveFuente === "track") {
       stopVisualObserver();
       visualNode = null;
@@ -904,6 +984,151 @@ lastVisualSeen = "";
 
       updateOverlayStatus();
     }
+
+    // Flow labeling in-place
+    if (getPlatform() === "flow") labelFlowControls();
+  }
+
+  // -------------------- KeepControls --------------------
+  function keepControlsTick() {
+    if (!extensionActiva) return;
+    const v = currentVideo || getMainVideo();
+    if (!v) return;
+
+    const p = getPlatform();
+    const needs = (p === "flow" || p === "max" || p === "netflix");
+
+    if (!needs) return;
+
+    try {
+      const r = v.getBoundingClientRect();
+      const x = r.left + r.width * 0.5;
+      const y = r.top + r.height * 0.90;
+
+      v.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
+      v.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: x, clientY: y }));
+
+      // foco suave (no secuestra teclado)
+      if (document.activeElement !== v && !isTyping()) {
+        v.setAttribute("tabindex", v.getAttribute("tabindex") || "-1");
+        v.focus?.({ preventScroll: true });
+      }
+    } catch (_) {}
+
+    // Flow: re-etiquetar cada tanto por SPA
+    if (p === "flow") labelFlowControls();
+  }
+
+  // -------------------- Flow A11y labeling (in-place) --------------------
+  function normName(el) {
+    const aria = normalize(el.getAttribute?.("aria-label") || "");
+    const title = normalize(el.getAttribute?.("title") || "");
+    const txt = normalize(el.innerText || el.textContent || "");
+    return aria || title || txt;
+  }
+
+  function isVisibleEl(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width < 14 || r.height < 14) return false;
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity || 1) < 0.05) return false;
+    return true;
+  }
+
+  function intersectsVideo(el, vr) {
+    const r = el.getBoundingClientRect();
+    const x = Math.max(0, Math.min(vr.right, r.right) - Math.max(vr.left, r.left));
+    const y = Math.max(0, Math.min(vr.bottom, r.bottom) - Math.max(vr.top, r.top));
+    return (x * y) > 120;
+  }
+
+  function labelFlowControls() {
+    const v = currentVideo || getMainVideo();
+    if (!v) return 0;
+    const vr = v.getBoundingClientRect();
+
+    const all = Array.from(document.querySelectorAll("button,[role='button'],[tabindex]"))
+      .filter(el =>
+        el.getBoundingClientRect &&
+        isVisibleEl(el) &&
+        intersectsVideo(el, vr) &&
+        !el.closest("#kathware-overlay-root,#kathware-overlay-panel,#kw-toast")
+      );
+
+    // Agrupar por filas (cluster por Y)
+    const items = all.map(el => {
+      const r = el.getBoundingClientRect();
+      return {
+        el,
+        cx: r.left + r.width / 2,
+        cy: r.top + r.height / 2,
+        w: r.width,
+        h: r.height,
+        name: normName(el),
+        testId: el.getAttribute("data-testid") || "",
+        cls: String(el.className || "")
+      };
+    });
+
+    items.sort((a,b) => a.cy - b.cy);
+    const rows = [];
+    for (const it of items) {
+      let placed = false;
+      for (const row of rows) {
+        if (Math.abs(row.cy - it.cy) < 16) {
+          row.items.push(it);
+          row.cy = (row.cy + it.cy) / 2;
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) rows.push({ cy: it.cy, items: [it] });
+    }
+    rows.forEach(r => r.items.sort((a,b) => a.cx - b.cx));
+
+    let labeled = 0;
+
+    // Heurística: fila “grande” (80x40) => controles play/seek
+    for (const row of rows) {
+      const big = row.items.filter(x => x.w >= 60 && x.h >= 32 && x.w <= 110);
+      if (big.length >= 3) {
+        // orden por X suele ser: Reiniciar, Atrasar, Pausar, Adelantar, Siguiente
+        const namesByIndex = ["Reiniciar", "Atrasar 10 segundos", "Pausar/Reproducir", "Adelantar 10 segundos", "Episodio siguiente"];
+        big.sort((a,b) => a.cx - b.cx);
+        for (let i = 0; i < big.length && i < namesByIndex.length; i++) {
+          const b = big[i];
+          if (b.name) continue; // si ya tiene texto/aria, no tocamos
+          b.el.setAttribute("aria-label", namesByIndex[i]);
+          b.el.setAttribute("tabindex", b.el.getAttribute("tabindex") || "0");
+          b.el.setAttribute("role", b.el.getAttribute("role") || "button");
+          labeled++;
+        }
+      }
+    }
+
+    // Heurística: fila “chica” (≈35x32) => episodios / audio-sub / fullscreen + volumen
+    for (const row of rows) {
+      const small = row.items.filter(x => x.w <= 60 && x.h <= 60);
+      if (small.length >= 3) {
+        for (const s of small) {
+          if (s.name) continue;
+
+          let label = "Control del reproductor";
+
+          if (s.testId === "volume-btn") label = "Volumen / Silenciar";
+          else if (/fullscreen/i.test(s.cls)) label = "Pantalla completa";
+          else if (/audio|sub/i.test(s.cls)) label = "Audio y subtítulos";
+
+          s.el.setAttribute("aria-label", label);
+          s.el.setAttribute("tabindex", s.el.getAttribute("tabindex") || "0");
+          s.el.setAttribute("role", s.el.getAttribute("role") || "button");
+          labeled++;
+        }
+      }
+    }
+
+    return labeled;
   }
 
   // -------------------- Keyboard controls --------------------
@@ -1012,11 +1237,15 @@ lastVisualSeen = "";
     try { clearInterval(rehookTimer); } catch (_) {}
     try { clearInterval(pollTimerVisual); } catch (_) {}
     try { clearInterval(visualReselectTimer); } catch (_) {}
+    try { clearInterval(keepControlsTimer); } catch (_) {}
+    try { clearInterval(flowLabelTimer); } catch (_) {}
 
     pollTimerTrack = null;
     rehookTimer = null;
     pollTimerVisual = null;
     visualReselectTimer = null;
+    keepControlsTimer = null;
+    flowLabelTimer = null;
   }
 
   function stopAll() {
@@ -1030,14 +1259,12 @@ lastVisualSeen = "";
     visualSelectors = null;
 
     detenerLectura();
-    updateOverlayStatus();
   }
 
   function startTimers() {
     stopTimers();
 
     rehookTimer = setInterval(rehookTick, CFG.rehookMs);
-
     pollTimerTrack = setInterval(pollTrackTick, CFG.pollMsTrack);
     pollTimerVisual = setInterval(pollVisualTick, CFG.pollMsVisual);
 
@@ -1055,6 +1282,16 @@ lastVisualSeen = "";
         startVisual();
       }
     }, CFG.visualReselectMs);
+
+    keepControlsTimer = setInterval(keepControlsTick, CFG.keepControlsMs);
+
+    // Flow: reforzar etiquetado cada tanto (SPA re-render)
+    flowLabelTimer = setInterval(() => {
+      if (!extensionActiva) return;
+      if (getPlatform() !== "flow") return;
+      const n = labelFlowControls();
+      if (n && CFG.debug) console.log("[KathWare] FlowMode: etiqueté", n, "controles del player.");
+    }, 1200);
   }
 
   function restartPipeline() {
@@ -1065,35 +1302,49 @@ lastVisualSeen = "";
     visualNode = null;
     visualSelectors = null;
 
-lastTrackSeen = "";
-lastVisualSeen = "";
+    lastTrackSeen = "";
+    lastVisualSeen = "";
 
     lastEmitText = "";
     lastEmitAt = 0;
-effectiveFuente = "visual"; // default safe
+
+    effectiveFuente = "visual"; // default safe
     rehookTick();
+    updateOverlayTracksList();
     updateOverlayStatus();
+  }
+
+  function setUIVisible(visible) {
+    if (visible) {
+      ensureOverlay();
+      updateOverlayTracksList();
+      updateOverlayStatus();
+      // pill visible siempre, panel solo si usuario lo abre
+    } else {
+      destroyOverlay();
+    }
   }
 
   function toggleExtension() {
     extensionActiva = !extensionActiva;
 
-    ensureOverlay();
-    updateOverlayStatus();
-
     const p = getPlatform();
     const label = platformLabel(p);
 
     if (extensionActiva) {
+      setUIVisible(true);
       cargarVozES();
       notify(`🟢 KathWare ON — ${label}`);
       startTimers();
-      effectiveFuente = "visual"; // default safe
+      effectiveFuente = "visual";
       rehookTick();
-      if (p === "flow") setPanelOpen(true);
+
+      // en Flow, solemos abrir panel por accesibilidad, pero lo dejamos “a pedido”
+      // setPanelOpen(true);
     } else {
       notify(`🔴 KathWare OFF — ${label}`);
       stopAll();
+      setUIVisible(false);
     }
   }
 
@@ -1129,6 +1380,7 @@ effectiveFuente = "visual"; // default safe
     if (matchHotkey(e, CFG.hotkeys.panel)) {
       e.preventDefault();
       e.stopPropagation();
+      if (!overlayRoot) return;
       const open = overlayPanel && overlayPanel.style.display !== "none";
       setPanelOpen(!open);
       return;
@@ -1148,6 +1400,7 @@ effectiveFuente = "visual"; // default safe
         }
 
         if (message?.action === "updateSettings") {
+          // async => SOLO acá devolvemos true
           cargarConfigDesdeStorage(() => {
             updateOverlayStatus();
             updateOverlayTracksList();
@@ -1183,27 +1436,26 @@ effectiveFuente = "visual"; // default safe
         }
 
         if (message?.action === "toggleOverlayPanel") {
+          if (!overlayRoot) return sendResponse?.({ status: "no-ui" });
           const open = overlayPanel && overlayPanel.style.display !== "none";
           setPanelOpen(!open);
           sendResponse?.({ status: "ok" });
           return false;
         }
 
+        sendResponse?.({ status: "noop" });
         return false;
       } catch (e) {
         log("onMessage error", e);
-        sendResponse?.({ status: "error" });
+        sendResponse?.({ status: "error", error: String(e?.message || e) });
         return false;
       }
     });
   }
 
-  // -------------------- Init --------------------
-  ensureOverlay();
+  // -------------------- Init (NO mostramos UI) --------------------
   cargarConfigDesdeStorage(() => {
     currentVideo = getMainVideo();
-    updateOverlayTracksList();
-    updateOverlayStatus();
-    log("content.js listo en", location.hostname, "plataforma:", getPlatform());
+    log("content.js listo en", location.hostname, "plataforma:", getPlatform(), "UI: a demanda (Ctrl+Shift+K)");
   });
 })();
