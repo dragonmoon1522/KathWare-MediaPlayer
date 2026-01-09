@@ -27,7 +27,7 @@
   "commands": {
     "toggle_kathware_narrator": {
       "suggested_key": {
-        "default": "Alt+Shift+K"
+        "default": "CTRL+Alt+K"
       },
       "description": "Activar o desactivar narrador de KathWare"
     }
