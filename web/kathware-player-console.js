@@ -1,61 +1,162 @@
+// ====================================================
+// KathWare Media Player - Console Script - v2.0.0
+// (Basado en content.js MV3; adaptado para consola)
+// - Sin chrome.runtime / browser.runtime / storage.local
+// - Pill siempre visible
+// - Ctrl+Alt+K ON/OFF | Ctrl+Alt+O Panel | Ctrl+Alt+L Modo
+// ====================================================
+
 (() => {
-  const KW = (window.__KW_CONSOLE_PLAYER__ ||= {});
-  if (KW.running) {
-    console.warn("[KW] ya está corriendo. stop: window.__KW_CONSOLE_PLAYER__.stop()");
+  if (window.__KATHWARE_MEDIA_PLAYER__?.loadedAt) {
+    console.warn("[KathWare] Ya estaba cargado. Si querés recargar, borrá window.__KATHWARE_MEDIA_PLAYER__ y pegá de nuevo.");
     return;
   }
-  KW.running = true;
+  window.__KATHWARE_MEDIA_PLAYER__ = { loadedAt: Date.now(), version: "2.0.0-console" };
 
   const CFG = {
     debug: true,
-    rehookMs: 1000,
+
+    // Engine timings
     pollMsTrack: 250,
+    rehookMs: 1000,
     pollMsVisual: 450,
-    visualReselectMs: 1200,
-    keepControlsMs: 850,
     cooldownMs: 650,
     burstMs: 450,
-    autoOpenPanelOnSubs: false
+    visualReselectMs: 1200,
+
+    // keep controls
+    keepControlsMs: 850,
+
+    // keyboard controls
+    seekSmall: 5,
+    seekBig: 10,
+    volStep: 0.05,
+
+    // Hotkeys in-page
+    hotkeys: {
+      toggle: { ctrl: true, alt: true,  shift: false, key: "k" }, // Ctrl+Alt+K
+      mode:   { ctrl: true, alt: true,  shift: false, key: "l" }, // Ctrl+Alt+L
+      panel:  { ctrl: true, alt: true,  shift: false, key: "o" }, // Ctrl+Alt+O
+    },
+
+    autoOpenPanelOnSubs: false,
   };
 
-  const log = (...a) => CFG.debug && console.log("[KW]", ...a);
+  const log = (...a) => CFG.debug && console.log("[KathWare]", ...a);
+
+  // -------------------- Estado --------------------
+  let extensionActiva = false;
+
+  // Flow menu observer
+  let flowMenuObserver = null;
+  const flowMenusProcessed = new WeakSet();
+
+  // "off" | "sintetizador" | "lector"
+  let modoNarradorGlobal = "lector";
+
+  // "auto" | "track" | "visual"
+  let fuenteSubGlobal = "auto";
+  let trackIndexGlobal = 0;
+
+  // Fuente efectiva real
+  let effectiveFuente = "visual";
+
+  // Voice
+  let voiceES = null;
+
+  // Live region
+  let liveRegion = null;
+
+  // Engine refs
+  let currentVideo = null;
+  let currentTrack = null;
+
+  // Timers/observers
+  let pollTimerTrack = null;
+  let rehookTimer = null;
+  let pollTimerVisual = null;
+  let visualReselectTimer = null;
+  let keepControlsTimer = null;
+
+  let visualObserver = null;
+  let visualObserverActive = false;
+
+  // Visual node/sel
+  let visualNode = null;
+  let visualSelectors = null;
+
+  // Overlay
+  let overlayRoot = null;
+  let overlayPanel = null;
+  let overlayPill = null;
+  let overlayStatus = null;
+  let overlayText = null;
+  let overlayTrackSelect = null;
+  let overlayModoSelect = null;
+  let overlayFuenteSelect = null;
+
+  // Toast
+  let toastEl = null;
+  let toastTimer = null;
+
+  // Dedupe lectura
+  let lastEmitText = "";
+  let lastEmitAt = 0;
+
+  // Per-source change detection
+  let lastTrackSeen = "";
+  let lastVisualSeen = "";
+
+  // Flow labeling signature
+  let lastFlowControlsSig = "";
+  let lastFlowLabeledCount = 0;
+
+  // -------------------- Utils --------------------
   const normalize = (s) =>
     String(s ?? "")
       .replace(/\u00A0/g, " ")
       .replace(/<[^>]+>/g, "")
       .replace(/\s+/g, " ")
       .trim();
-  const clamp = (n, a, b) => Math.min(b, Math.max(a, n));
 
-  let active = false;
-  let modo = "lector";       // "lector" | "sintetizador" | "off"
-  let fuente = "auto";       // "auto" | "track" | "visual"
-  let trackIndex = 0;
-  let effectiveFuente = "visual";
+  const clamp = (n, min, max) => Math.min(max, Math.max(min, n));
 
-  let voiceES = null;
-  let liveRegion = null;
+  const isTyping = () => {
+    const ae = document.activeElement;
+    if (!ae) return false;
+    const tag = (ae.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (ae.isContentEditable) return true;
+    return false;
+  };
 
-  let currentVideo = null;
-  let currentTrack = null;
+  function getPlatform() {
+    const h = location.hostname.toLowerCase();
+    if (h.includes("netflix")) return "netflix";
+    if (h.includes("disneyplus") || h.includes("disney")) return "disney";
+    if (h.includes("hbomax") || h.includes("max.com") || h.includes("play.hbomax.com")) return "max";
+    if (h.includes("youtube")) return "youtube";
+    if (h.includes("primevideo") || h.includes("amazon")) return "prime";
+    if (h.includes("paramountplus")) return "paramount";
+    if (h.includes("flow.com.ar")) return "flow";
+    return "generic";
+  }
 
-  let visualNode = null;
-  let visualSelectors = null;
-  let visualObserver = null;
-  let visualObserverActive = false;
+  function platformLabel(p) {
+    return ({
+      netflix: "Netflix",
+      disney: "Disney+",
+      max: "Max",
+      youtube: "YouTube",
+      prime: "Prime Video",
+      paramount: "Paramount+",
+      flow: "Flow",
+      generic: "Sitio"
+    })[p] || "Sitio";
+  }
 
-  let lastEmitText = "";
-  let lastEmitAt = 0;
-  let lastTrackSeen = "";
-  let lastVisualSeen = "";
-
-  let overlayRoot = null, overlayPanel = null, overlayPill = null, overlayStatus = null, overlayText = null, overlayModo = null, overlayFuente = null, overlayTrackSel = null;
-
-  let timers = [];
-
-  const getPlatform = () => (location.hostname.includes("flow.com.ar") ? "flow" : "generic");
-
-  const listVoicesDebug = () => {
+  // -------------------- Voice / LiveRegion --------------------
+  function listVoicesDebug() {
     try {
       if (typeof speechSynthesis === "undefined") return { ok: false, reason: "speechSynthesis undefined" };
       const voces = speechSynthesis.getVoices() || [];
@@ -63,9 +164,9 @@
     } catch (e) {
       return { ok: false, reason: String(e?.message || e) };
     }
-  };
+  }
 
-  const cargarVozES = () => {
+  function cargarVozES() {
     try {
       if (typeof speechSynthesis === "undefined") return;
       const voces = speechSynthesis.getVoices() || [];
@@ -83,45 +184,39 @@
             null;
         };
       }
-    } catch {}
-  };
+    } catch (_) {}
+  }
 
-  const asegurarLiveRegion = () => {
+  function asegurarLiveRegion() {
     if (liveRegion) return liveRegion;
     liveRegion = document.createElement("div");
-    liveRegion.id = "kw-console-live";
+    liveRegion.id = "kathware-live-region";
     liveRegion.setAttribute("role", "status");
     liveRegion.setAttribute("aria-live", "polite");
     liveRegion.setAttribute("aria-atomic", "true");
-    Object.assign(liveRegion.style, { position: "fixed", left: "-9999px", top: "0", width: "1px", height: "1px", overflow: "hidden", zIndex: 999999999 });
-    document.body.appendChild(liveRegion);
+    Object.assign(liveRegion.style, {
+      position: "fixed",
+      left: "-9999px",
+      top: "0",
+      width: "1px",
+      height: "1px",
+      overflow: "hidden",
+    });
+    document.documentElement.appendChild(liveRegion);
     return liveRegion;
-  };
+  }
 
-  const pushToLive = (t) => {
-    const lr = asegurarLiveRegion();
-    lr.textContent = "";
-    setTimeout(() => (lr.textContent = t), 10);
-  };
-
-  const speakTTS = (t) => {
-    try {
-      if (typeof speechSynthesis === "undefined") return { ok: false, reason: "speechSynthesis undefined" };
-      cargarVozES();
-      if (!voiceES) return { ok: false, reason: "No encuentro voz ES" };
-      speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(t);
-      u.voice = voiceES;
-      u.lang = voiceES.lang || "es-AR";
-      u.onerror = (ev) => console.warn("[KW] TTS error:", ev?.error || ev);
-      speechSynthesis.speak(u);
-      return { ok: true, selectedLang: voiceES.lang, speaking: speechSynthesis.speaking, pending: speechSynthesis.pending, paused: speechSynthesis.paused };
-    } catch (e) {
-      return { ok: false, reason: String(e?.message || e) };
+  function detenerLectura() {
+    try { speechSynthesis?.cancel?.(); } catch (_) {}
+    if (liveRegion) {
+      try { liveRegion.remove(); } catch (_) {}
+      liveRegion = null;
     }
-  };
+    lastEmitText = "";
+    lastEmitAt = 0;
+  }
 
-  const shouldEmit = (t) => {
+  function shouldEmit(t) {
     const now = Date.now();
     if (!t) return false;
     if (t === lastEmitText && (now - lastEmitAt) < CFG.burstMs) return false;
@@ -129,169 +224,624 @@
     lastEmitText = t;
     lastEmitAt = now;
     return true;
-  };
+  }
 
-  const shouldReadNow = () => {
-    if (!active) return false;
+  function pushToLiveRegion(texto) {
+    const lr = asegurarLiveRegion();
+    lr.textContent = "";
+    setTimeout(() => { lr.textContent = texto; }, 10);
+  }
+
+  function speakTTS(texto) {
+    try {
+      if (typeof speechSynthesis === "undefined") return { ok: false, reason: "speechSynthesis undefined" };
+      cargarVozES();
+      if (!voiceES) return { ok: false, reason: "No encuentro voz ES (getVoices vacío o sin es-*)" };
+
+      speechSynthesis.cancel();
+
+      const u = new SpeechSynthesisUtterance(texto);
+      u.voice = voiceES;
+      u.lang = voiceES.lang || "es-AR";
+
+      u.onend = () => CFG.debug && console.log("[KathWare] TTS end");
+      u.onerror = (ev) => CFG.debug && console.warn("[KathWare] TTS error:", ev?.error || ev);
+
+      speechSynthesis.speak(u);
+
+      return {
+        ok: true,
+        selectedLang: voiceES.lang,
+        speaking: !!speechSynthesis.speaking,
+        pending: !!speechSynthesis.pending,
+        paused: !!speechSynthesis.paused
+      };
+    } catch (e) {
+      return { ok: false, reason: String(e?.message || e) };
+    }
+  }
+
+  function shouldReadNow() {
+    if (!extensionActiva) return false;
     if (!currentVideo) return true;
-    try { if (currentVideo.paused || currentVideo.ended) return false; } catch {}
+    try {
+      if (currentVideo.paused || currentVideo.ended) return false;
+    } catch (_) {}
     return true;
-  };
+  }
 
-  const read = (text) => {
-    const t = normalize(text);
+  function leerTextoAccesible(texto) {
+    const t = normalize(texto);
     if (!t) return;
     if (!shouldEmit(t)) return;
 
-    if (overlayRoot) overlayText.textContent = t;
+    updateOverlayText(t);
 
-    if (!active || modo === "off") return;
+    if (!extensionActiva) return;
+    if (modoNarradorGlobal === "off") return;
     if (!shouldReadNow()) return;
 
-    if (modo === "lector") return pushToLive(t);
-
-    const res = speakTTS(t);
-    if (!res.ok) {
-      console.warn("[KW] TTS FALLÓ:", res);
-      console.warn("[KW] Voices debug:", listVoicesDebug());
-      try {
-        console.warn("[KW] speechSynthesis state:", {
-          speaking: speechSynthesis.speaking,
-          pending: speechSynthesis.pending,
-          paused: speechSynthesis.paused
-        });
-      } catch {}
-    } else {
-      CFG.debug && console.log("[KW] TTS OK:", res);
+    if (modoNarradorGlobal === "lector") {
+      pushToLiveRegion(t);
+      return;
     }
-  };
 
-  const findVideos = () => Array.from(document.querySelectorAll("video"));
-  const pickMainVideo = () => {
-    const vids = findVideos();
-    if (!vids.length) return null;
-    return vids
-      .map(v => {
-        const r = v.getBoundingClientRect();
-        return { v, a: Math.max(0, r.width) * Math.max(0, r.height) };
-      })
-      .sort((a,b) => b.a - a.a)[0].v;
-  };
+    if (modoNarradorGlobal === "sintetizador") {
+      const res = speakTTS(t);
+      if (!res.ok) {
+        console.warn("[KathWare] TTS FALLÓ:", res);
+        console.warn("[KathWare] Voices debug:", listVoicesDebug());
+      }
+    }
+  }
 
-  const platformSelectors = () => {
-    if (getPlatform() === "flow") return [".theoplayer-ttml-texttrack-", ".theoplayer-texttracks", ".theoplayer-texttracks *"];
-    return ["[class*='subtitle']", "[class*='caption']", "[aria-live='polite']", "[role='status']"];
-  };
+  // -------------------- Toast --------------------
+  function notify(msg) {
+    if (extensionActiva) pushToLiveRegion(msg);
 
-  const looksLikeNoise = (node, text) => {
+    try {
+      if (!toastEl) {
+        toastEl = document.createElement("div");
+        toastEl.id = "kw-toast";
+        toastEl.setAttribute("role", "status");
+        toastEl.setAttribute("aria-live", "polite");
+        Object.assign(toastEl.style, {
+          position: "fixed",
+          top: "1rem",
+          right: "1rem",
+          background: "rgba(0,0,0,0.85)",
+          color: "#fff",
+          padding: "0.75rem 1rem",
+          borderRadius: "10px",
+          zIndex: "2147483647",
+          fontSize: "14px",
+          maxWidth: "70vw",
+          boxShadow: "0 8px 30px rgba(0,0,0,0.35)"
+        });
+        document.documentElement.appendChild(toastEl);
+      }
+      toastEl.textContent = msg;
+
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        if (toastEl) toastEl.textContent = "";
+      }, 2000);
+    } catch (_) {}
+  }
+
+  // -------------------- Overlay --------------------
+  function ensureOverlay() {
+    if (overlayRoot) return;
+
+    overlayRoot = document.createElement("div");
+    overlayRoot.id = "kathware-overlay-root";
+    Object.assign(overlayRoot.style, {
+      position: "fixed",
+      right: "14px",
+      bottom: "14px",
+      zIndex: "2147483647",
+      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
+    });
+
+    overlayPanel = document.createElement("div");
+    overlayPanel.id = "kathware-overlay-panel";
+    Object.assign(overlayPanel.style, {
+      display: "none",
+      marginBottom: "10px",
+      padding: "12px 14px",
+      borderRadius: "12px",
+      background: "rgba(0,0,0,0.78)",
+      color: "#fff",
+      maxWidth: "75vw",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.25)"
+    });
+
+    overlayStatus = document.createElement("div");
+    Object.assign(overlayStatus.style, {
+      opacity: ".9",
+      fontSize: "13px",
+      marginBottom: "6px"
+    });
+
+    overlayText = document.createElement("div");
+    Object.assign(overlayText.style, {
+      whiteSpace: "pre-wrap",
+      fontSize: "16px",
+      lineHeight: "1.35"
+    });
+
+    const settingsRow = document.createElement("div");
+    Object.assign(settingsRow.style, {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: "8px",
+      marginTop: "10px"
+    });
+
+    overlayModoSelect = document.createElement("select");
+    overlayModoSelect.setAttribute("aria-label", "Modo de lectura");
+    overlayModoSelect.innerHTML = `
+      <option value="off">Desactivado</option>
+      <option value="sintetizador">Voz</option>
+      <option value="lector">Lector</option>
+    `;
+
+    overlayFuenteSelect = document.createElement("select");
+    overlayFuenteSelect.setAttribute("aria-label", "Fuente de subtítulos");
+    overlayFuenteSelect.innerHTML = `
+      <option value="auto">Auto</option>
+      <option value="track">TRACK</option>
+      <option value="visual">VISUAL</option>
+    `;
+
+    settingsRow.appendChild(overlayModoSelect);
+    settingsRow.appendChild(overlayFuenteSelect);
+
+    overlayTrackSelect = document.createElement("select");
+    overlayTrackSelect.setAttribute("aria-label", "Pista de subtítulos");
+    overlayTrackSelect.style.marginTop = "8px";
+    overlayTrackSelect.innerHTML = `<option value="0">Pista 1</option>`;
+
+    const controlsRow = document.createElement("div");
+    Object.assign(controlsRow.style, {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "8px",
+      marginTop: "10px"
+    });
+
+    const mkBtn = (label, onClick, aria) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      if (aria) b.setAttribute("aria-label", aria);
+      Object.assign(b.style, {
+        padding: "6px 10px",
+        borderRadius: "10px",
+        border: "0",
+        cursor: "pointer"
+      });
+      b.addEventListener("click", onClick);
+      return b;
+    };
+
+    const btnPlay  = mkBtn("▶️", () => currentVideo?.play?.(), "Reproducir");
+    const btnPause = mkBtn("⏸️", () => currentVideo?.pause?.(), "Pausar");
+    const btnBack  = mkBtn("⏪", () => seekBy(-CFG.seekBig), "Atrasar 10 segundos");
+    const btnFwd   = mkBtn("⏩", () => seekBy(+CFG.seekBig), "Adelantar 10 segundos");
+    const btnMute  = mkBtn("M",  () => toggleMute(), "Silenciar / Activar sonido");
+    const btnCC    = mkBtn("C",  () => toggleCaptions(), "Subtítulos (si hay tracks)");
+    const btnFull  = mkBtn("⛶", () => requestFull(), "Pantalla completa");
+    const btnClose = mkBtn("Cerrar", () => setPanelOpen(false), "Cerrar panel");
+
+    controlsRow.append(btnPlay, btnPause, btnBack, btnFwd, btnMute, btnCC, btnFull, btnClose);
+
+    overlayPanel.append(overlayStatus, overlayText, settingsRow, overlayTrackSelect, controlsRow);
+
+    overlayPill = document.createElement("button");
+    overlayPill.type = "button";
+    overlayPill.setAttribute("aria-label", "Abrir KathWare Media Player");
+    overlayPill.textContent = "KW";
+    Object.assign(overlayPill.style, {
+      width: "46px",
+      height: "46px",
+      borderRadius: "999px",
+      border: "0",
+      cursor: "pointer",
+      background: "rgba(0,0,0,0.78)",
+      color: "#fff",
+      fontWeight: "700",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.25)"
+    });
+
+    overlayPill.addEventListener("click", () => {
+      const open = overlayPanel.style.display !== "none";
+      setPanelOpen(!open);
+    });
+
+    overlayRoot.append(overlayPanel, overlayPill);
+    document.documentElement.appendChild(overlayRoot);
+
+    overlayModoSelect.addEventListener("change", () => {
+      modoNarradorGlobal = overlayModoSelect.value;
+      if (modoNarradorGlobal === "off") detenerLectura();
+      updateOverlayStatus();
+      notify(`Modo: ${modoNarradorGlobal}`);
+    });
+
+    overlayFuenteSelect.addEventListener("change", () => {
+      fuenteSubGlobal = overlayFuenteSelect.value;
+      if (extensionActiva) restartPipeline();
+      updateOverlayStatus();
+      notify(`Fuente: ${fuenteSubGlobal}`);
+    });
+
+    overlayTrackSelect.addEventListener("change", () => {
+      const idx = Number(overlayTrackSelect.value);
+      if (Number.isFinite(idx)) {
+        trackIndexGlobal = idx;
+        if (extensionActiva) restartPipeline();
+        updateOverlayStatus();
+        notify(`Pista: ${idx + 1}`);
+      }
+    });
+  }
+
+  function setPanelOpen(open) {
+    ensureOverlay();
+    overlayPanel.style.display = open ? "block" : "none";
+  }
+
+  function updateOverlayText(text) {
+    if (!overlayRoot) return;
+    overlayText.textContent = text || "";
+    if (CFG.autoOpenPanelOnSubs && text && text.trim()) setPanelOpen(true);
+  }
+
+  function describeTrack(t) {
+    if (!t) return "Sin track";
+    let cuesLen = "?";
+    try { cuesLen = t.cues ? t.cues.length : 0; } catch {}
+    return `${t.label || "(sin label)"} lang=${t.language || "??"} mode=${t.mode} cues=${cuesLen}`;
+  }
+
+  function updateOverlayTracksList() {
+    if (!overlayRoot) return;
+    const v = currentVideo;
+    const tracks = v?.textTracks ? Array.from(v.textTracks) : [];
+    overlayTrackSelect.innerHTML = "";
+
+    if (!tracks.length) {
+      const opt = document.createElement("option");
+      opt.value = "0";
+      opt.textContent = "Sin pistas";
+      overlayTrackSelect.appendChild(opt);
+      overlayTrackSelect.disabled = true;
+      return;
+    }
+
+    tracks.forEach((t, idx) => {
+      const opt = document.createElement("option");
+      opt.value = String(idx);
+      opt.textContent = (t.label || t.language || `Pista ${idx + 1}`);
+      overlayTrackSelect.appendChild(opt);
+    });
+
+    overlayTrackSelect.disabled = false;
+    overlayTrackSelect.value = String(clamp(trackIndexGlobal, 0, tracks.length - 1));
+  }
+
+  function updateOverlayStatus() {
+    if (!overlayRoot) return;
+    const label = platformLabel(getPlatform());
+
+    const enabled = extensionActiva ? "🟢 ON" : "🔴 OFF";
+    const modeEmoji =
+      modoNarradorGlobal === "lector" ? "🧏" :
+      modoNarradorGlobal === "sintetizador" ? "🗣️" : "🙊";
+
+    const src = fuenteSubGlobal === "track" ? "🎛️TRACK"
+              : fuenteSubGlobal === "visual" ? "👀VISUAL"
+              : `🤖AUTO→${effectiveFuente.toUpperCase()}`;
+
+    const trackInfo = currentTrack ? describeTrack(currentTrack) : "Sin track";
+
+    overlayModoSelect.value = modoNarradorGlobal;
+    overlayFuenteSelect.value = fuenteSubGlobal;
+
+    overlayStatus.textContent = `${enabled} ${modeEmoji} | ${src} | ${label} | ${trackInfo}`;
+  }
+
+  // -------------------- Video detection --------------------
+  function findVideosRecursively(root = document, out = new Set()) {
+    try {
+      root.querySelectorAll("video").forEach(v => out.add(v));
+      root.querySelectorAll("*").forEach(el => el.shadowRoot && findVideosRecursively(el.shadowRoot, out));
+    } catch (_) {}
+    return Array.from(out);
+  }
+
+  function pickLargestVideo(videos) {
+    if (!videos.length) return null;
+    try {
+      return videos
+        .map(v => {
+          const r = v.getBoundingClientRect();
+          return { v, area: Math.max(0, r.width) * Math.max(0, r.height) };
+        })
+        .sort((a, b) => b.area - a.area)[0]?.v || videos[0];
+    } catch {
+      return videos[0];
+    }
+  }
+
+  function getMainVideo() {
+    const vids = findVideosRecursively();
+    return pickLargestVideo(vids);
+  }
+
+  // -------------------- TRACK pipeline --------------------
+  function readActiveCues(track) {
+    try {
+      const active = track?.activeCues ? Array.from(track.activeCues) : [];
+      const joined = active.map(c => c.text || "").join(" / ");
+      return normalize(joined);
+    } catch {
+      return "";
+    }
+  }
+
+  function trackSeemsUsable(track) {
+    if (!track) return false;
+    try { if (track.mode === "disabled") track.mode = "hidden"; } catch (_) {}
+    try {
+      const txt = readActiveCues(track);
+      if (txt) return true;
+      const len = track.cues ? track.cues.length : 0;
+      if (len > 0) return true;
+    } catch (_) {
+      return false;
+    }
+    return false;
+  }
+
+  function videoHasUsableTracks(video) {
+    const list = Array.from(video?.textTracks || []);
+    if (!list.length) return false;
+    return list.some(trackSeemsUsable);
+  }
+
+  function pickBestTrack(video) {
+    const list = Array.from(video?.textTracks || []);
+    if (!list.length) return null;
+
+    const idx = clamp(trackIndexGlobal, 0, list.length - 1);
+    return (
+      list[idx] ||
+      list.find(t => t.mode === "showing") ||
+      list.find(t => t.mode === "hidden" && t.cues && t.cues.length) ||
+      list.find(t => t.mode === "hidden") ||
+      list[0] ||
+      null
+    );
+  }
+
+  function attachTrack(track) {
+    if (!track) return;
+    try { if (track.mode === "disabled") track.mode = "hidden"; } catch (_) {}
+    try { track.oncuechange = null; } catch (_) {}
+
+    track.oncuechange = () => {
+      if (!shouldReadNow()) return;
+      if (effectiveFuente !== "track") return;
+
+      const txt = readActiveCues(track);
+      if (!txt) return;
+
+      if (txt === lastTrackSeen) return;
+      lastTrackSeen = txt;
+
+      leerTextoAccesible(txt);
+    };
+
+    const initial = readActiveCues(track);
+    if (initial && initial !== lastTrackSeen) {
+      lastTrackSeen = initial;
+      leerTextoAccesible(initial);
+    }
+  }
+
+  function startTrack() {
+    const v = currentVideo;
+    if (!v?.textTracks || !v.textTracks.length) {
+      currentTrack = null;
+      updateOverlayStatus();
+      return false;
+    }
+
+    const best = pickBestTrack(v);
+    if (!best) {
+      currentTrack = null;
+      updateOverlayStatus();
+      return false;
+    }
+
+    if (!trackSeemsUsable(best)) {
+      currentTrack = null;
+      updateOverlayStatus();
+      return false;
+    }
+
+    if (best !== currentTrack) {
+      currentTrack = best;
+      attachTrack(best);
+      updateOverlayTracksList();
+      updateOverlayStatus();
+      log("TRACK activo:", describeTrack(best));
+    }
+    return true;
+  }
+
+  function pollTrackTick() {
+    if (!shouldReadNow()) return;
+    if (effectiveFuente !== "track") return;
+    if (!currentTrack) return;
+
+    const txt = readActiveCues(currentTrack);
+    if (!txt) return;
+
+    if (txt === lastTrackSeen) return;
+    lastTrackSeen = txt;
+
+    leerTextoAccesible(txt);
+  }
+
+  // -------------------- VISUAL pipeline --------------------
+  function platformSelectors(p) {
+    if (p === "flow") return [".theoplayer-ttml-texttrack-", ".theoplayer-texttracks", ".theoplayer-texttracks *"];
+    if (p === "max") return ["[data-testid='cueBoxRowTextCue']", "[data-testid*='cueBoxRowTextCue']", "[class*='TextCue']"];
+    if (p === "netflix") return [".player-timedtext-text-container", ".player-timedtext", "span.player-timedtext-text", "div[data-uia*='subtitle']", "div[data-uia*='captions']"];
+    if (p === "disney") return ["[class*='subtitle']", "[class*='subtitles']", "[class*='caption']", "[class*='captions']", "[class*='timedText']", "[class*='timed-text']", "[data-testid*='subtitle']", "[data-testid*='caption']", "[aria-label*='Subt']", "[aria-live='polite']", "[role='status']"];
+    if (p === "youtube") return [".ytp-caption-segment", ".captions-text .caption-visual-line", ".ytp-caption-window-container"];
+    return [".plyr__caption", ".flirc-caption", "[class*='subtitle']", "[class*='caption']", "[class*='cc']", "[aria-live='polite']", "[role='status']"];
+  }
+
+  function looksLikeNoise(node, text) {
     const t = normalize(text);
     if (!t) return true;
-    if (t.length < 2 || t.length > 260) return true;
-    const tag = (node?.tagName || "").toUpperCase();
-    if (["A","BUTTON","INPUT","TEXTAREA","SELECT","LABEL"].includes(tag)) return true;
-    return false;
-  };
 
-  const pickBestVisualNode = () => {
+    const tag = (node?.tagName || "").toUpperCase();
+    if (["H1","H2","H3","H4","H5","H6","HEADER","NAV","MAIN","ARTICLE","ASIDE","FOOTER"].includes(tag)) return true;
+    if (["A","BUTTON","INPUT","TEXTAREA","SELECT","LABEL"].includes(tag)) return true;
+
+    if (t.length < 2 || t.length > 260) return true;
+
+    const cls = ((node?.className || "") + " " + (node?.id || "")).toLowerCase();
+    if (/toast|snack|tooltip|popover|modal|dialog|notif|banner|sr-only|screenreader-only/.test(cls)) return true;
+
+    return false;
+  }
+
+  function pickBestVisualNode() {
     const nodes = [];
     for (const sel of (visualSelectors || [])) {
-      try { document.querySelectorAll(sel).forEach(n => nodes.push(n)); } catch {}
+      try { document.querySelectorAll(sel).forEach(n => nodes.push(n)); } catch (_) {}
     }
-    const ttml = nodes.find(n => (n.className || "").toString().includes("theoplayer-ttml-texttrack-"));
-    if (ttml) return ttml;
+    if (!nodes.length) return null;
+
+    const theoTTML = nodes.find(n => (n.className || "").toString().includes("theoplayer-ttml-texttrack-"));
+    if (theoTTML) return theoTTML;
+
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
-      const t = normalize(n.textContent);
+      const t = normalize(n?.textContent);
       if (!looksLikeNoise(n, t)) return n;
     }
     return null;
-  };
+  }
 
-  const stopVisualObs = () => {
-    try { visualObserver?.disconnect?.(); } catch {}
+  function stopVisualObserver() {
+    try { visualObserver?.disconnect?.(); } catch (_) {}
     visualObserver = null;
     visualObserverActive = false;
-  };
+  }
 
-  const startVisual = () => {
-    visualSelectors = platformSelectors();
+  function startVisual() {
+    const p = getPlatform();
+    visualSelectors = platformSelectors(p);
+
     const next = pickBestVisualNode();
     if (next) visualNode = next;
-    stopVisualObs();
+
+    stopVisualObserver();
 
     if (visualNode) {
-      visualObserver = new MutationObserver(() => {
-        if (!shouldReadNow()) return;
-        if (effectiveFuente !== "visual") return;
-        const t = normalize(visualNode.textContent);
-        if (!t || looksLikeNoise(visualNode, t)) return;
-        if (t === lastVisualSeen) return;
-        lastVisualSeen = t;
-        read(t);
-      });
       try {
+        visualObserver = new MutationObserver(() => {
+          if (!shouldReadNow()) return;
+          if (effectiveFuente !== "visual") return;
+
+          const t = normalize(visualNode?.textContent);
+          if (!t) return;
+          if (looksLikeNoise(visualNode, t)) return;
+
+          if (t === lastVisualSeen) return;
+          lastVisualSeen = t;
+
+          leerTextoAccesible(t);
+        });
+
         visualObserver.observe(visualNode, { childList: true, subtree: true, characterData: true });
         visualObserverActive = true;
-        log("VISUAL observer listo en", visualNode);
-      } catch {}
+      } catch (_) {
+        visualObserverActive = false;
+      }
     }
-  };
 
-  const readActiveCues = (track) => {
-    try {
-      const active = track?.activeCues ? Array.from(track.activeCues) : [];
-      return normalize(active.map(c => c.text || "").join(" / "));
-    } catch { return ""; }
-  };
+    updateOverlayStatus();
+  }
 
-  const pickBestTrack = (v) => {
-    const list = Array.from(v?.textTracks || []);
-    if (!list.length) return null;
-    const idx = clamp(trackIndex, 0, list.length - 1);
-    return list[idx] || list[0] || null;
-  };
+  function pollVisualTick() {
+    if (!shouldReadNow()) return;
+    if (effectiveFuente !== "visual") return;
 
-  const attachTrack = (t) => {
+    if (!visualSelectors) visualSelectors = platformSelectors(getPlatform());
+
+    if (!visualNode) {
+      visualNode = pickBestVisualNode();
+      if (visualNode) startVisual();
+      return;
+    }
+
+    if (visualObserverActive) return;
+
+    const t = normalize(visualNode.textContent);
     if (!t) return;
-    try { if (t.mode === "disabled") t.mode = "hidden"; } catch {}
-    try { t.oncuechange = null; } catch {}
-    t.oncuechange = () => {
-      if (!shouldReadNow()) return;
-      if (effectiveFuente !== "track") return;
-      const txt = readActiveCues(t);
-      if (!txt || txt === lastTrackSeen) return;
-      lastTrackSeen = txt;
-      read(txt);
-    };
-  };
+    if (looksLikeNoise(visualNode, t)) return;
 
-  // ----------------------------------------------------------
-  // Flow in-place labeling (dinámico + fallbacks icon-only)
-  // ----------------------------------------------------------
-  const isVisibleEl = (el) => {
-    if (!el?.getBoundingClientRect) return false;
+    if (t === lastVisualSeen) return;
+    lastVisualSeen = t;
+
+    leerTextoAccesible(t);
+  }
+
+  // -------------------- Flow A11y --------------------
+  function isVisibleEl(el) {
+    if (!el || !el.getBoundingClientRect) return false;
     const r = el.getBoundingClientRect();
     if (r.width < 14 || r.height < 14) return false;
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity || 1) < 0.05) return false;
     if (cs.pointerEvents === "none") return false;
     return true;
-  };
+  }
 
-  const intersectsVideo = (el, vr) => {
+  function intersectsVideo(el, vr) {
     const r = el.getBoundingClientRect();
     const x = Math.max(0, Math.min(vr.right, r.right) - Math.max(vr.left, r.left));
     const y = Math.max(0, Math.min(vr.bottom, r.bottom) - Math.max(vr.top, r.top));
     return (x * y) > 120;
-  };
+  }
 
-  const visibleText = (el) => {
-    // ojo: innerText suele respetar visibilidad; textContent no.
-    const t = normalize(el?.innerText || el?.textContent || "");
-    return t;
-  };
+  function stableElKey(el) {
+    const tag = (el.tagName || "").toLowerCase();
+    const tid = el.getAttribute("data-testid") || "";
+    const role = el.getAttribute("role") || "";
+    const aria = el.getAttribute("aria-label") || "";
+    const cls = String(el.className || "").slice(0, 80);
+    return `${tag}|${tid}|${role}|${aria}|${cls}`;
+  }
 
-  const guessIconOnlyLabel = (testId, cls) => {
+  function flowControlsSignature(els) {
+    try {
+      const parts = els.slice(0, 120).map(stableElKey);
+      return `${els.length}::${parts.join("§")}`;
+    } catch (_) {
+      return String(els.length);
+    }
+  }
+
+  function guessIconOnlyLabel(testId, cls) {
     const blob = normalize(`${testId} ${cls}`).toLowerCase();
     if (testId === "volume-btn" || blob.includes("volume") || blob.includes("mute")) return "Volumen / Silenciar";
     if (testId === "cast-btn" || blob.includes("cast") || blob.includes("chromecast")) return "Transmitir (Cast)";
@@ -300,253 +850,437 @@
     if (testId === "more-emissions-btn" || blob.includes("emission") || blob.includes("episod")) return "Ir a episodios";
     if (testId === "back-btn" || blob.includes("back")) return "Volver";
     return "Control del reproductor";
-  };
+  }
 
-  const applyA11yLabel = (el, label) => {
+  function applyA11yLabel(el, label) {
     if (!el) return 0;
     const t = normalize(label);
     if (!t) return 0;
 
-    // Marcamos que fue autolabel para poder actualizarlo si cambia el texto
     const prev = el.getAttribute("aria-label") || "";
     const prevAuto = el.getAttribute("data-kw-autolabel") === "1";
+    const shouldSet = (!prev) || (prevAuto && prev !== t);
 
-    // Si no hay aria-label, o si fue autolabel nuestro, lo actualizamos siempre
-    if (!prev || prevAuto) {
+    if (shouldSet) {
       el.setAttribute("aria-label", t);
       el.setAttribute("data-kw-autolabel", "1");
     }
 
     if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
     if (!el.getAttribute("role")) el.setAttribute("role", "button");
-    return 1;
-  };
 
-  const labelFlowControls = () => {
+    return shouldSet ? 1 : 0;
+  }
+
+  function labelFlowControls() {
     if (getPlatform() !== "flow") return 0;
-    const v = currentVideo || pickMainVideo();
+
+    const v = currentVideo || getMainVideo();
     if (!v) return 0;
     const vr = v.getBoundingClientRect();
 
     const all = Array.from(document.querySelectorAll("button,[role='button'],[tabindex],[data-testid]"))
-      .filter(el => isVisibleEl(el) && intersectsVideo(el, vr));
+      .filter(el =>
+        el.getBoundingClientRect &&
+        isVisibleEl(el) &&
+        intersectsVideo(el, vr) &&
+        !el.closest("#kathware-overlay-root,#kathware-overlay-panel,#kw-toast,#kathware-live-region")
+      );
+
+    const sig = flowControlsSignature(all);
+    if (sig === lastFlowControlsSig) return 0;
+    lastFlowControlsSig = sig;
 
     let labeled = 0;
-
     for (const el of all) {
-      // 1) Si tiene texto visible => eso manda (y se mantiene actualizado)
-      const txt = visibleText(el);
-
-      // 2) Si no hay texto visible, fallback por testid/clase
+      const txt = normalize(el.innerText || el.textContent || "");
       const testId = el.getAttribute("data-testid") || "";
       const cls = String(el.className || "");
-
       const label = txt || guessIconOnlyLabel(testId, cls);
-
       labeled += applyA11yLabel(el, label);
     }
 
-    return labeled;
-  };
+    if (CFG.debug && labeled !== lastFlowLabeledCount) {
+      console.log("[KathWare] FlowMode:", { mode: "dynamic-label", labeled, changed: true });
+    }
+    lastFlowLabeledCount = labeled;
 
-  const keepControlsTick = () => {
-    if (!active) return;
-    const v = currentVideo || pickMainVideo();
+    return labeled;
+  }
+
+  function findFlowMenus() {
+    const candidates = Array.from(document.querySelectorAll(
+      "[role='menu'],[role='dialog'],[role='listbox'],[class*='menu'],[class*='Menu'],[class*='settings'],[class*='Settings']"
+    ));
+
+    return candidates.filter(el => {
+      try {
+        if (!isVisibleEl(el)) return false;
+        if (el.closest("#kathware-overlay-root,#kathware-overlay-panel,#kw-toast")) return false;
+        const t = normalize(el.innerText || el.textContent || "");
+        if (!t) return false;
+        return /audio|sub|subt[ií]t|idioma|lengua|cc/i.test(t);
+      } catch (_) { return false; }
+    });
+  }
+
+  function labelFlowMenu(menuEl) {
+    if (!menuEl || flowMenusProcessed.has(menuEl)) return 0;
+    flowMenusProcessed.add(menuEl);
+
+    if (!menuEl.getAttribute("role")) menuEl.setAttribute("role", "dialog");
+    if (!menuEl.getAttribute("aria-label")) menuEl.setAttribute("aria-label", "Audio y subtítulos");
+
+    const items = Array.from(menuEl.querySelectorAll("button,[role='menuitem'],[role='option'],li,[tabindex]"))
+      .filter(isVisibleEl);
+
+    let labeled = 0;
+    for (const it of items) {
+      const txt = normalize(it.innerText || it.textContent || "");
+      if (!txt) continue;
+      labeled += applyA11yLabel(it, txt);
+    }
+
+    if (CFG.debug && labeled) console.log("[KathWare] FlowMenu captured:", { labeledItems: labeled });
+    return labeled;
+  }
+
+  function startFlowMenuObserver() {
+    if (flowMenuObserver) return;
+    flowMenuObserver = new MutationObserver(() => {
+      if (!extensionActiva) return;
+      if (getPlatform() !== "flow") return;
+
+      const menus = findFlowMenus();
+      for (const m of menus) labelFlowMenu(m);
+    });
+
+    try { flowMenuObserver.observe(document.documentElement, { childList: true, subtree: true }); } catch (_) {}
+  }
+
+  function stopFlowMenuObserver() {
+    try { flowMenuObserver?.disconnect?.(); } catch (_) {}
+    flowMenuObserver = null;
+  }
+
+  // -------------------- KeepControls --------------------
+  function keepControlsTick() {
+    if (!extensionActiva) return;
+    const v = currentVideo || getMainVideo();
     if (!v) return;
-    if (!["flow"].includes(getPlatform())) return;
+
+    const p = getPlatform();
+    const needs = (p === "flow" || p === "max" || p === "netflix");
+    if (!needs) return;
 
     try {
       const r = v.getBoundingClientRect();
       const x = r.left + r.width * 0.5;
-      const y = r.top + r.height * 0.9;
+      const y = r.top + r.height * 0.90;
       v.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
       v.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: x, clientY: y }));
-      if (document.activeElement !== v) {
-        v.setAttribute("tabindex", v.getAttribute("tabindex") || "-1");
-        v.focus?.({ preventScroll: true });
-      }
-    } catch {}
+    } catch (_) {}
 
-    if (getPlatform() === "flow") {
-      const n = labelFlowControls();
-      if (CFG.debug) console.log("[KW] FlowMode:", { mode: "dynamic-label", labeled: n, hasVideo: !!v });
+    if (p === "flow") labelFlowControls();
+  }
+
+  // -------------------- Keyboard controls --------------------
+  function seekBy(delta) {
+    const v = currentVideo;
+    if (!v) return;
+    try {
+      const dur = Number.isFinite(v.duration) ? v.duration : (v.currentTime + delta);
+      v.currentTime = clamp((v.currentTime || 0) + delta, 0, dur);
+    } catch (_) {}
+  }
+
+  function toggleMute() {
+    const v = currentVideo;
+    if (!v) return;
+    try { v.muted = !v.muted; } catch (_) {}
+  }
+
+  function requestFull() {
+    const v = currentVideo;
+    if (!v) return;
+    try { v.requestFullscreen?.(); } catch (_) {}
+  }
+
+  function toggleCaptions() {
+    const v = currentVideo;
+    if (!v?.textTracks?.length) {
+      notify("⚠️ No hay pistas de subtítulos para alternar.");
+      return;
     }
-  };
+    const t = currentTrack || pickBestTrack(v);
+    if (!t) return;
 
-  // ----------------------------------------------------------
-  // UI
-  // ----------------------------------------------------------
-  const buildUI = () => {
-    if (overlayRoot) return;
+    try {
+      if (t.mode === "showing") t.mode = "hidden";
+      else if (t.mode === "hidden") t.mode = "showing";
+      else t.mode = "hidden";
+      currentTrack = t;
+      updateOverlayStatus();
+      notify(`CC: ${t.mode === "showing" ? "ON" : "OFF"}`);
+    } catch (_) {}
+  }
 
-    overlayRoot = document.createElement("div");
-    overlayRoot.id = "kw-console-root";
-    Object.assign(overlayRoot.style, { position:"fixed", right:"14px", bottom:"14px", zIndex:999999999, fontFamily:"system-ui, Segoe UI, Arial" });
+  function handlePlayerHotkeys(e) {
+    if (!extensionActiva) return false;
+    if (isTyping()) return false;
+    if (e.ctrlKey || e.altKey || e.metaKey) return false;
 
-    overlayPanel = document.createElement("div");
-    Object.assign(overlayPanel.style, { display:"none", marginBottom:"10px", padding:"12px 14px", borderRadius:"12px", background:"rgba(0,0,0,0.78)", color:"#fff", maxWidth:"75vw", boxShadow:"0 8px 24px rgba(0,0,0,0.25)" });
+    const panelOpen = overlayPanel && overlayPanel.style.display !== "none";
+    if (!panelOpen && getPlatform() !== "flow") return false;
 
-    overlayStatus = document.createElement("div");
-    overlayStatus.style.opacity = ".9";
-    overlayStatus.style.fontSize = "13px";
-    overlayStatus.style.marginBottom = "6px";
+    const key = (e.key || "").toLowerCase();
 
-    overlayText = document.createElement("div");
-    overlayText.style.whiteSpace = "pre-wrap";
-    overlayText.style.fontSize = "16px";
-    overlayText.style.lineHeight = "1.35";
+    if (key === "k" || key === " ") {
+      e.preventDefault();
+      const v = currentVideo;
+      if (!v) return true;
+      try { v.paused ? v.play() : v.pause(); } catch (_) {}
+      return true;
+    }
 
-    overlayModo = document.createElement("select");
-    overlayModo.innerHTML = `<option value="off">Desactivado</option><option value="sintetizador">Voz</option><option value="lector">Lector</option>`;
+    if (key === "arrowleft") { e.preventDefault(); seekBy(e.shiftKey ? -CFG.seekBig : -CFG.seekSmall); return true; }
+    if (key === "arrowright"){ e.preventDefault(); seekBy(e.shiftKey ? +CFG.seekBig : +CFG.seekSmall); return true; }
+    if (key === "j") { e.preventDefault(); seekBy(-CFG.seekBig); return true; }
+    if (key === "l") { e.preventDefault(); seekBy(+CFG.seekBig); return true; }
+    if (key === "m") { e.preventDefault(); toggleMute(); return true; }
+    if (key === "c") { e.preventDefault(); toggleCaptions(); return true; }
+    if (key === "f") { e.preventDefault(); requestFull(); return true; }
 
-    overlayFuente = document.createElement("select");
-    overlayFuente.innerHTML = `<option value="auto">Auto</option><option value="track">TRACK</option><option value="visual">VISUAL</option>`;
+    if (key === "arrowup") {
+      e.preventDefault();
+      const v = currentVideo;
+      if (!v) return true;
+      try { v.volume = clamp((v.volume ?? 1) + CFG.volStep, 0, 1); } catch (_) {}
+      return true;
+    }
+    if (key === "arrowdown") {
+      e.preventDefault();
+      const v = currentVideo;
+      if (!v) return true;
+      try { v.volume = clamp((v.volume ?? 1) - CFG.volStep, 0, 1); } catch (_) {}
+      return true;
+    }
 
-    overlayTrackSel = document.createElement("select");
-    overlayTrackSel.innerHTML = `<option value="0">Pista 1</option>`;
+    return false;
+  }
 
-    const row = document.createElement("div");
-    Object.assign(row.style, { display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginTop:"10px" });
-    row.appendChild(overlayModo);
-    row.appendChild(overlayFuente);
+  // -------------------- Rehook --------------------
+  function computeSignature(v, t) {
+    const vSig = v ? (v.currentSrc || v.src || "v") : "noV";
+    const tSig = t ? (t.label + "|" + t.language + "|" + t.mode) : "noT";
+    let cues = 0;
+    try { cues = t?.cues?.length || 0; } catch (_) {}
+    return `${vSig}|${tSig}|${cues}`;
+  }
 
-    overlayPanel.appendChild(overlayStatus);
-    overlayPanel.appendChild(overlayText);
-    overlayPanel.appendChild(row);
-    overlayPanel.appendChild(overlayTrackSel);
+  let lastSig = "";
 
-    overlayPill = document.createElement("button");
-    overlayPill.textContent = "KW";
-    overlayPill.setAttribute("aria-label","Abrir KathWare Media Player (consola)");
-    Object.assign(overlayPill.style, { width:"46px", height:"46px", borderRadius:"999px", border:"0", cursor:"pointer", background:"rgba(0,0,0,0.78)", color:"#fff", fontWeight:"700", boxShadow:"0 8px 24px rgba(0,0,0,0.25)" });
+  function rehookTick() {
+    const v = getMainVideo();
 
-    overlayPill.onclick = () => (overlayPanel.style.display = overlayPanel.style.display === "none" ? "block" : "none");
-    overlayModo.onchange = () => { modo = overlayModo.value; log("Modo =>", modo); updateUI(); };
-    overlayFuente.onchange = () => { fuente = overlayFuente.value; restart(); log("Fuente =>", fuente); };
-    overlayTrackSel.onchange = () => { trackIndex = Number(overlayTrackSel.value)||0; restart(); };
-
-    overlayRoot.appendChild(overlayPanel);
-    overlayRoot.appendChild(overlayPill);
-    document.body.appendChild(overlayRoot);
-
-    updateUI();
-  };
-
-  const destroyUI = () => {
-    try { overlayRoot?.remove?.(); } catch {}
-    overlayRoot = overlayPanel = overlayPill = overlayStatus = overlayText = overlayModo = overlayFuente = overlayTrackSel = null;
-  };
-
-  const updateUI = () => {
-    if (!overlayRoot) return;
-    overlayModo.value = modo;
-    overlayFuente.value = fuente;
-    overlayStatus.textContent = `${active ? "🟢 ON" : "🔴 OFF"} | ${fuente}→${effectiveFuente} | ${getPlatform()} | Hotkey: Ctrl+Alt+K`;
-  };
-
-  const restart = () => {
-    lastTrackSeen = "";
-    lastVisualSeen = "";
-    stopVisualObs();
-    visualNode = null;
-    visualSelectors = null;
-    try { if (currentTrack) currentTrack.oncuechange = null; } catch {}
-    currentTrack = null;
-  };
-
-  const rehookTick = () => {
-    const v = pickMainVideo();
     if (v !== currentVideo) {
       currentVideo = v;
-      restart();
-    }
-    if (!active) return;
+      lastTrackSeen = "";
+      lastVisualSeen = "";
+      try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
+      currentTrack = null;
 
-    const hasTracks = !!(currentVideo?.textTracks && currentVideo.textTracks.length);
-    effectiveFuente = (fuente === "auto") ? (hasTracks ? "track" : "visual") : (fuente === "track" ? "track" : "visual");
+      visualNode = null;
+      visualSelectors = null;
+      stopVisualObserver();
+
+      updateOverlayTracksList();
+      updateOverlayStatus();
+    }
+
+    if (!extensionActiva) return;
+
+    const hasUsableTracks = videoHasUsableTracks(currentVideo);
+
+    effectiveFuente =
+      fuenteSubGlobal === "auto"
+        ? (hasUsableTracks ? "track" : "visual")
+        : (fuenteSubGlobal === "track" ? "track" : "visual");
 
     if (effectiveFuente === "track") {
-      const t = pickBestTrack(currentVideo);
-      if (t && t !== currentTrack) { currentTrack = t; attachTrack(t); }
+      stopVisualObserver();
+      visualNode = null;
+      visualSelectors = null;
     } else {
-      startVisual();
+      try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
+      currentTrack = null;
     }
 
-    updateUI();
+    const bestTrack = (effectiveFuente === "track") ? pickBestTrack(currentVideo) : null;
+    const sig = computeSignature(currentVideo, bestTrack);
+
+    if (sig !== lastSig) {
+      lastSig = sig;
+
+      if (effectiveFuente === "track") {
+        const ok = startTrack();
+        if (!ok) {
+          effectiveFuente = "visual";
+          startVisual();
+        }
+      } else {
+        startVisual();
+      }
+
+      updateOverlayStatus();
+    }
+
     if (getPlatform() === "flow") labelFlowControls();
-  };
+  }
 
-  const pollTrack = () => {
-    if (!active || !shouldReadNow()) return;
-    if (effectiveFuente !== "track" || !currentTrack) return;
-    const t = readActiveCues(currentTrack);
-    if (!t || t === lastTrackSeen) return;
-    lastTrackSeen = t;
-    read(t);
-  };
+  // -------------------- Pipeline control --------------------
+  function stopTimers() {
+    try { clearInterval(pollTimerTrack); } catch (_) {}
+    try { clearInterval(rehookTimer); } catch (_) {}
+    try { clearInterval(pollTimerVisual); } catch (_) {}
+    try { clearInterval(visualReselectTimer); } catch (_) {}
+    try { clearInterval(keepControlsTimer); } catch (_) {}
+    pollTimerTrack = rehookTimer = pollTimerVisual = visualReselectTimer = keepControlsTimer = null;
+  }
 
-  const pollVisual = () => {
-    if (!active || !shouldReadNow()) return;
-    if (effectiveFuente !== "visual") return;
-    if (!visualSelectors) visualSelectors = platformSelectors();
-    if (!visualNode) { visualNode = pickBestVisualNode(); if (visualNode) startVisual(); return; }
-    if (visualObserverActive) return;
-    const t = normalize(visualNode.textContent);
-    if (!t || looksLikeNoise(visualNode, t)) return;
-    if (t === lastVisualSeen) return;
-    lastVisualSeen = t;
-    read(t);
-  };
+  function stopAll() {
+    stopTimers();
+    stopFlowMenuObserver();
 
-  const startTimers = () => {
-    timers.push(setInterval(rehookTick, CFG.rehookMs));
-    timers.push(setInterval(pollTrack, CFG.pollMsTrack));
-    timers.push(setInterval(pollVisual, CFG.pollMsVisual));
-    timers.push(setInterval(() => {
-      if (!active || effectiveFuente !== "visual") return;
-      const next = pickBestVisualNode() || visualNode;
-      if (next && next !== visualNode) { visualNode = next; startVisual(); }
-    }, CFG.visualReselectMs));
-    timers.push(setInterval(keepControlsTick, CFG.keepControlsMs));
-  };
+    try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
+    currentTrack = null;
 
-  const stopTimers = () => { timers.forEach(t => clearInterval(t)); timers = []; };
+    stopVisualObserver();
+    visualNode = null;
+    visualSelectors = null;
 
-  const toggle = () => {
-    active = !active;
-    if (active) {
-      buildUI();
-      cargarVozES();
-      startTimers();
-      rehookTick();
-      log("ON ✅  Hotkey: Ctrl+Alt+K (toggle UI+engine)");
-    } else {
-      stopTimers();
-      stopVisualObs();
-      try { speechSynthesis?.cancel?.(); } catch {}
-      try { liveRegion?.remove?.(); } catch {}
-      liveRegion = null;
-      destroyUI();
-      log("OFF 🛑");
+    detenerLectura();
+  }
+
+  function startTimers() {
+    stopTimers();
+
+    rehookTimer = setInterval(rehookTick, CFG.rehookMs);
+    pollTimerTrack = setInterval(pollTrackTick, CFG.pollMsTrack);
+    pollTimerVisual = setInterval(pollVisualTick, CFG.pollMsVisual);
+
+    visualReselectTimer = setInterval(() => {
+      if (!extensionActiva) return;
+      if (effectiveFuente !== "visual") return;
+
+      if (!visualSelectors) visualSelectors = platformSelectors(getPlatform());
+      const prev = visualNode;
+      const next = pickBestVisualNode() || prev;
+      if (next && next !== prev) {
+        visualNode = next;
+        startVisual();
+      }
+    }, CFG.visualReselectMs);
+
+    keepControlsTimer = setInterval(keepControlsTick, CFG.keepControlsMs);
+
+    if (getPlatform() === "flow") startFlowMenuObserver();
+  }
+
+  function restartPipeline() {
+    try { if (currentTrack) currentTrack.oncuechange = null; } catch (_) {}
+    currentTrack = null;
+
+    stopVisualObserver();
+    visualNode = null;
+    visualSelectors = null;
+
+    lastTrackSeen = "";
+    lastVisualSeen = "";
+    lastEmitText = "";
+    lastEmitAt = 0;
+
+    effectiveFuente = "visual";
+    rehookTick();
+    updateOverlayTracksList();
+    updateOverlayStatus();
+  }
+
+  function setUIVisible(visible) {
+    ensureOverlay(); // pill siempre visible
+    if (!visible) {
+      try { setPanelOpen(false); } catch (_) {}
     }
-    updateUI();
-  };
+    updateOverlayTracksList();
+    updateOverlayStatus();
+  }
 
-  const onKey = (e) => {
-    if (e.ctrlKey && e.altKey && (e.key || "").toLowerCase() === "k") {
+  function toggleExtension() {
+    extensionActiva = !extensionActiva;
+    const label = platformLabel(getPlatform());
+
+    if (extensionActiva) {
+      setUIVisible(true);
+      cargarVozES();
+      notify(`🟢 KathWare ON — ${label}`);
+      startTimers();
+      effectiveFuente = "visual";
+      rehookTick();
+    } else {
+      notify(`🔴 KathWare OFF — ${label}`);
+      stopAll();
+      setUIVisible(false);
+    }
+  }
+
+  // -------------------- Hotkeys in-page --------------------
+  function matchHotkey(e, hk) {
+    const key = (e.key || "").toLowerCase();
+    return (
+      key === hk.key &&
+      !!e.ctrlKey === !!hk.ctrl &&
+      !!e.altKey === !!hk.alt &&
+      !!e.shiftKey === !!hk.shift
+    );
+  }
+
+  document.addEventListener("keydown", (e) => {
+    if (matchHotkey(e, CFG.hotkeys.toggle)) {
       e.preventDefault();
       e.stopPropagation();
-      toggle();
+      toggleExtension();
+      return;
     }
-  };
-  document.addEventListener("keydown", onKey, true);
+    if (matchHotkey(e, CFG.hotkeys.mode)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const order = ["lector", "sintetizador", "off"];
+      const i = order.indexOf(modoNarradorGlobal);
+      modoNarradorGlobal = order[(i + 1) % order.length];
+      notify(`Modo: ${modoNarradorGlobal}`);
+      updateOverlayStatus();
+      if (modoNarradorGlobal === "off") detenerLectura();
+      return;
+    }
+    if (matchHotkey(e, CFG.hotkeys.panel)) {
+      e.preventDefault();
+      e.stopPropagation();
+      ensureOverlay();
+      const open = overlayPanel && overlayPanel.style.display !== "none";
+      setPanelOpen(!open);
+      return;
+    }
 
-  KW.stop = () => {
-    try { document.removeEventListener("keydown", onKey, true); } catch {}
-    if (active) toggle();
-    KW.running = false;
-    console.log("[KW] stop ok.");
-  };
+    if (handlePlayerHotkeys(e)) return;
+  }, true);
 
-  console.log("[KW] listo. Hotkey: Ctrl+Alt+K  | stop: window.__KW_CONSOLE_PLAYER__.stop()");
+  // -------------------- Init --------------------
+  currentVideo = getMainVideo();
+
+  ensureOverlay();
+  setPanelOpen(false);
+  updateOverlayTracksList();
+  updateOverlayStatus();
+
+  log("Console script listo en", location.hostname, "plataforma:", getPlatform(), "Hotkeys: Ctrl+Alt+K (ON/OFF), Ctrl+Alt+O (Panel), Ctrl+Alt+L (Modo)");
 })();
