@@ -3,10 +3,10 @@
 // Engine v4-ish (rehook + polling + overlay pill + TRACK/VISUAL)
 // - TRACK: lee video.textTracks (oncuechange + poll activeCues fallback)
 // - VISUAL: lee captions por selectores por plataforma + observer (poll solo fallback)
-// - Overlay: SOLO visible cuando usuario activa (Ctrl+Shift+K o command)
+// - Overlay: SOLO visible cuando usuario activa (Ctrl+Alt+K o command)
 // - KeepControls: mantiene visibles controles de reproductores “tímidos” (Flow/Max/Netflix)
-// - Flow A11y: etiqueta controles nativos del reproductor (in-place)
-// - ON/OFF: via command (background) + fallback hotkey in-page (Ctrl+Shift+K)
+// - Flow A11y: etiqueta controles nativos del reproductor (in-place) - DYNAMIC LABELING
+// - ON/OFF: via command (background) + fallback hotkey in-page (Ctrl+Alt+K)
 // Compat: Chromium (chrome.*) + Firefox (browser.*)
 // ====================================================
 
@@ -39,7 +39,7 @@
     volStep: 0.05,
 
     // Hotkey fallback in-page (si commands no está o choca)
-    // PEDIDO: Ctrl+Shift+K
+    // PEDIDO: Ctrl+Alt+K
     hotkeys: {
       toggle: { ctrl: true, alt: false, shift: true, key: "k" },
       mode:   { ctrl: true, alt: true,  shift: false, key: "l" },
@@ -457,10 +457,11 @@
     controlsRow.style.gap = "8px";
     controlsRow.style.marginTop = "10px";
 
-    const mkBtn = (label, onClick) => {
+    const mkBtn = (label, onClick, aria) => {
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = label;
+      if (aria) b.setAttribute("aria-label", aria);
       Object.assign(b.style, {
         padding: "6px 10px",
         borderRadius: "10px",
@@ -471,14 +472,14 @@
       return b;
     };
 
-    const btnPlay   = mkBtn("▶️", () => currentVideo?.play?.());
-    const btnPause  = mkBtn("⏸️", () => currentVideo?.pause?.());
-    const btnBack   = mkBtn("⏪", () => seekBy(-CFG.seekBig));
-    const btnFwd    = mkBtn("⏩", () => seekBy(+CFG.seekBig));
-    const btnMute   = mkBtn("M", () => toggleMute());
-    const btnCC     = mkBtn("C", () => toggleCaptions());
-    const btnFull   = mkBtn("⛶", () => requestFull());
-    const btnClose  = mkBtn("Cerrar", () => setPanelOpen(false));
+    const btnPlay   = mkBtn("▶️", () => currentVideo?.play?.(), "Reproducir");
+    const btnPause  = mkBtn("⏸️", () => currentVideo?.pause?.(), "Pausar");
+    const btnBack   = mkBtn("⏪", () => seekBy(-CFG.seekBig), "Atrasar 10 segundos");
+    const btnFwd    = mkBtn("⏩", () => seekBy(+CFG.seekBig), "Adelantar 10 segundos");
+    const btnMute   = mkBtn("M",  () => toggleMute(), "Silenciar / Activar sonido");
+    const btnCC     = mkBtn("C",  () => toggleCaptions(), "Subtítulos");
+    const btnFull   = mkBtn("⛶", () => requestFull(), "Pantalla completa");
+    const btnClose  = mkBtn("Cerrar", () => setPanelOpen(false), "Cerrar panel");
 
     controlsRow.appendChild(btnPlay);
     controlsRow.appendChild(btnPause);
@@ -553,7 +554,6 @@
   function updateOverlayText(text) {
     if (!overlayRoot) return;
     overlayText.textContent = text || "";
-    // pedido: NO auto-open para no confundir
     if (CFG.autoOpenPanelOnSubs && text && text.trim()) setPanelOpen(true);
   }
 
@@ -762,7 +762,6 @@
   // -------------------- VISUAL pipeline --------------------
   function platformSelectors(p) {
     if (p === "flow") {
-      // THEOplayer en Flow
       return [
         ".theoplayer-ttml-texttrack-",
         ".theoplayer-texttracks",
@@ -841,7 +840,6 @@
     }
     if (!nodes.length) return null;
 
-    // preferimos el contenedor TTML si existe
     const theoTTML = nodes.find(n => (n.className || "").toString().includes("theoplayer-ttml-texttrack-"));
     if (theoTTML) return theoTTML;
 
@@ -997,7 +995,6 @@
 
     const p = getPlatform();
     const needs = (p === "flow" || p === "max" || p === "netflix");
-
     if (!needs) return;
 
     try {
@@ -1008,31 +1005,23 @@
       v.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
       v.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: x, clientY: y }));
 
-      // foco suave (no secuestra teclado)
       if (document.activeElement !== v && !isTyping()) {
         v.setAttribute("tabindex", v.getAttribute("tabindex") || "-1");
         v.focus?.({ preventScroll: true });
       }
     } catch (_) {}
 
-    // Flow: re-etiquetar cada tanto por SPA
     if (p === "flow") labelFlowControls();
   }
 
-  // -------------------- Flow A11y labeling (in-place) --------------------
-  function normName(el) {
-    const aria = normalize(el.getAttribute?.("aria-label") || "");
-    const title = normalize(el.getAttribute?.("title") || "");
-    const txt = normalize(el.innerText || el.textContent || "");
-    return aria || title || txt;
-  }
-
+  // -------------------- Flow A11y labeling (in-place) - DYNAMIC --------------------
   function isVisibleEl(el) {
     if (!el || !el.getBoundingClientRect) return false;
     const r = el.getBoundingClientRect();
     if (r.width < 14 || r.height < 14) return false;
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity || 1) < 0.05) return false;
+    if (cs.pointerEvents === "none") return false;
     return true;
   }
 
@@ -1043,89 +1032,69 @@
     return (x * y) > 120;
   }
 
+  function visibleText(el) {
+    return normalize(el?.innerText || el?.textContent || "");
+  }
+
+  function guessIconOnlyLabel(testId, cls) {
+    const blob = normalize(`${testId} ${cls}`).toLowerCase();
+    if (testId === "volume-btn" || blob.includes("volume") || blob.includes("mute")) return "Volumen / Silenciar";
+    if (testId === "cast-btn" || blob.includes("cast") || blob.includes("chromecast")) return "Transmitir (Cast)";
+    if (testId === "full-screen-btn" || blob.includes("full") || blob.includes("screen")) return "Pantalla completa";
+    if (testId === "audio-subtitle-btn" || blob.includes("subtitle") || blob.includes("audio")) return "Audio y subtítulos";
+    if (testId === "more-emissions-btn" || blob.includes("emission") || blob.includes("episod")) return "Ir a episodios";
+    if (testId === "back-btn" || blob.includes("back")) return "Volver";
+    return "Control del reproductor";
+  }
+
+  function applyA11yLabel(el, label) {
+    if (!el) return 0;
+    const t = normalize(label);
+    if (!t) return 0;
+
+    const prev = el.getAttribute("aria-label") || "";
+    const prevAuto = el.getAttribute("data-kw-autolabel") === "1";
+
+    // Si no tiene aria-label, o si lo pusimos nosotros antes, lo actualizamos
+    if (!prev || prevAuto) {
+      el.setAttribute("aria-label", t);
+      el.setAttribute("data-kw-autolabel", "1");
+    }
+
+    if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+    if (!el.getAttribute("role")) el.setAttribute("role", "button");
+
+    return 1;
+  }
+
   function labelFlowControls() {
+    if (getPlatform() !== "flow") return 0;
+
     const v = currentVideo || getMainVideo();
+;
     if (!v) return 0;
     const vr = v.getBoundingClientRect();
 
-    const all = Array.from(document.querySelectorAll("button,[role='button'],[tabindex]"))
+    const all = Array.from(document.querySelectorAll("button,[role='button'],[tabindex],[data-testid]"))
       .filter(el =>
         el.getBoundingClientRect &&
         isVisibleEl(el) &&
         intersectsVideo(el, vr) &&
-        !el.closest("#kathware-overlay-root,#kathware-overlay-panel,#kw-toast")
+        !el.closest("#kathware-overlay-root,#kathware-overlay-panel,#kw-toast,#kathware-live-region")
       );
-
-    // Agrupar por filas (cluster por Y)
-    const items = all.map(el => {
-      const r = el.getBoundingClientRect();
-      return {
-        el,
-        cx: r.left + r.width / 2,
-        cy: r.top + r.height / 2,
-        w: r.width,
-        h: r.height,
-        name: normName(el),
-        testId: el.getAttribute("data-testid") || "",
-        cls: String(el.className || "")
-      };
-    });
-
-    items.sort((a,b) => a.cy - b.cy);
-    const rows = [];
-    for (const it of items) {
-      let placed = false;
-      for (const row of rows) {
-        if (Math.abs(row.cy - it.cy) < 16) {
-          row.items.push(it);
-          row.cy = (row.cy + it.cy) / 2;
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) rows.push({ cy: it.cy, items: [it] });
-    }
-    rows.forEach(r => r.items.sort((a,b) => a.cx - b.cx));
 
     let labeled = 0;
 
-    // Heurística: fila “grande” (80x40) => controles play/seek
-    for (const row of rows) {
-      const big = row.items.filter(x => x.w >= 60 && x.h >= 32 && x.w <= 110);
-      if (big.length >= 3) {
-        // orden por X suele ser: Reiniciar, Atrasar, Pausar, Adelantar, Siguiente
-        const namesByIndex = ["Reiniciar", "Atrasar 10 segundos", "Pausar/Reproducir", "Adelantar 10 segundos", "Episodio siguiente"];
-        big.sort((a,b) => a.cx - b.cx);
-        for (let i = 0; i < big.length && i < namesByIndex.length; i++) {
-          const b = big[i];
-          if (b.name) continue; // si ya tiene texto/aria, no tocamos
-          b.el.setAttribute("aria-label", namesByIndex[i]);
-          b.el.setAttribute("tabindex", b.el.getAttribute("tabindex") || "0");
-          b.el.setAttribute("role", b.el.getAttribute("role") || "button");
-          labeled++;
-        }
-      }
+    for (const el of all) {
+      const txt = visibleText(el);
+      const testId = el.getAttribute("data-testid") || "";
+      const cls = String(el.className || "");
+      const label = txt || guessIconOnlyLabel(testId, cls);
+      labeled += applyA11yLabel(el, label);
     }
 
-    // Heurística: fila “chica” (≈35x32) => episodios / audio-sub / fullscreen + volumen
-    for (const row of rows) {
-      const small = row.items.filter(x => x.w <= 60 && x.h <= 60);
-      if (small.length >= 3) {
-        for (const s of small) {
-          if (s.name) continue;
-
-          let label = "Control del reproductor";
-
-          if (s.testId === "volume-btn") label = "Volumen / Silenciar";
-          else if (/fullscreen/i.test(s.cls)) label = "Pantalla completa";
-          else if (/audio|sub/i.test(s.cls)) label = "Audio y subtítulos";
-
-          s.el.setAttribute("aria-label", label);
-          s.el.setAttribute("tabindex", s.el.getAttribute("tabindex") || "0");
-          s.el.setAttribute("role", s.el.getAttribute("role") || "button");
-          labeled++;
-        }
-      }
+    if (labeled && CFG.debug) {
+      console.log("[KathWare] FlowMode:", { mode: "dynamic-label", labeled, hasVideo: true });
     }
 
     return labeled;
@@ -1290,7 +1259,7 @@
       if (!extensionActiva) return;
       if (getPlatform() !== "flow") return;
       const n = labelFlowControls();
-      if (n && CFG.debug) console.log("[KathWare] FlowMode: etiqueté", n, "controles del player.");
+      if (n && CFG.debug) console.log("[KathWare] FlowMode:", { labeled: n });
     }, 1200);
   }
 
@@ -1308,7 +1277,7 @@
     lastEmitText = "";
     lastEmitAt = 0;
 
-    effectiveFuente = "visual"; // default safe
+    effectiveFuente = "visual";
     rehookTick();
     updateOverlayTracksList();
     updateOverlayStatus();
@@ -1319,7 +1288,6 @@
       ensureOverlay();
       updateOverlayTracksList();
       updateOverlayStatus();
-      // pill visible siempre, panel solo si usuario lo abre
     } else {
       destroyOverlay();
     }
@@ -1338,9 +1306,6 @@
       startTimers();
       effectiveFuente = "visual";
       rehookTick();
-
-      // en Flow, solemos abrir panel por accesibilidad, pero lo dejamos “a pedido”
-      // setPanelOpen(true);
     } else {
       notify(`🔴 KathWare OFF — ${label}`);
       stopAll();
@@ -1400,7 +1365,6 @@
         }
 
         if (message?.action === "updateSettings") {
-          // async => SOLO acá devolvemos true
           cargarConfigDesdeStorage(() => {
             updateOverlayStatus();
             updateOverlayTracksList();
@@ -1456,6 +1420,6 @@
   // -------------------- Init (NO mostramos UI) --------------------
   cargarConfigDesdeStorage(() => {
     currentVideo = getMainVideo();
-    log("content.js listo en", location.hostname, "plataforma:", getPlatform(), "UI: a demanda (Ctrl+Shift+K)");
+    log("content.js listo en", location.hostname, "plataforma:", getPlatform(), "UI: a demanda (Ctrl+Alt+K)");
   });
 })();
