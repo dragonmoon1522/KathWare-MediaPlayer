@@ -1,12 +1,12 @@
 <script>
 // ====================================================
-// KathWare Media Player - Demo Local (v4-aligned)
-// - Compatible con WordPress (pegar en HTML)
-// - Usa #videoPlayer + inputs + selects
-// - Engine: rehook + polling (anti-freeze) como el probe v4
+// KathWare Media Player - Demo Local (v4-aligned, panel + auto)
+// - WordPress friendly
+// - Usa #videoPlayer + inputs + selects + #sub-accesible
 // Hotkeys:
 //   Ctrl+Alt+K -> ON/OFF
-//   Ctrl+Alt+L -> cycle outputMode
+//   Ctrl+Alt+L -> cycle narrator (lector -> voz -> off)
+//   Ctrl+Alt+O -> abrir/cerrar panel
 // ====================================================
 
 (() => {
@@ -15,7 +15,7 @@
   const inputVideo   = document.getElementById("videoInput");
   const inputSubs    = document.getElementById("subtitleInput");
   const modoNarrador = document.getElementById("modoNarrador"); // off | sintetizador | lector
-  const fuenteSub    = document.getElementById("fuenteSub");    // track | visual
+  const fuenteSub    = document.getElementById("fuenteSub");    // auto | track | visual (si no tiene auto, igual)
   const liveRegion   = document.getElementById("sub-accesible");
 
   if (!video) {
@@ -23,7 +23,7 @@
     return;
   }
 
-  // Para que los botones inline (onclick="video...") sigan funcionando
+  // Para que botones inline (onclick="video...") sigan funcionando
   window.video = video;
 
   // ----- Config -----
@@ -31,39 +31,56 @@
     debug: true,
     enabled: true,
 
-    // outputMode se sincroniza desde modoNarrador
-    // "live" | "tts" | "both" | "none"
+    // outputMode: "live" | "tts" | "none"
     outputMode: "live",
 
-    // sourceMode se sincroniza desde fuenteSub
-    // "track" | "visual"
-    sourceMode: "track",
+    // sourceMode: "auto" | "track" | "visual"
+    sourceMode: "auto",
+
+    trackIndex: 0,
 
     cooldownMs: 650,
+    burstMs: 450,
     cancelSpeechEachCue: true,
 
-    pollMs: 250,
+    pollMsTrack: 250,
+    pollMsVisual: 450,
     rehookMs: 1000,
+    visualReselectMs: 1200,
 
     hotkeys: {
       toggle: { ctrl: true, alt: true, shift: false, key: "k" },
       mode:   { ctrl: true, alt: true, shift: false, key: "l" },
+      panel:  { ctrl: true, alt: true, shift: false, key: "o" },
     }
   };
 
   const log = (...a) => CFG.debug && console.log("[KATHWARE DEMO]", ...a);
-  const normalize = (s) =>
-    (s ?? "").replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim();
-  const stripHtml = (s) => (s || "").replace(/<[^>]+>/g, "");
 
-  // ----- Voice (solo para TTS) -----
+  const normalize = (s) =>
+    String(s ?? "").replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim();
+
+  const stripHtml = (s) => String(s || "").replace(/<[^>]+>/g, "");
+
+  const shouldReadNow = () => {
+    if (!CFG.enabled) return false;
+    try {
+      if (video.paused || video.ended) return false;
+    } catch {}
+    return true;
+  };
+
+  // ----- Voice (TTS) -----
   let voiceES = null;
 
   const loadVoice = () => {
     if (typeof speechSynthesis === "undefined") return;
     const pick = () => {
       const voces = speechSynthesis.getVoices() || [];
-      voiceES = voces.find(v => v.lang && v.lang.startsWith("es")) || null;
+      voiceES =
+        voces.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
+        voces.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
+        null;
     };
     pick();
     if (!voiceES) speechSynthesis.onvoiceschanged = () => pick();
@@ -75,7 +92,7 @@
     let lastAt = 0;
     return (text) => {
       if (!liveRegion) return;
-      const t = normalize(text);
+      const t = normalize(stripHtml(text));
       if (!t) return;
 
       const ts = Date.now();
@@ -92,7 +109,7 @@
     let last = "";
     let lastAt = 0;
     return (text) => {
-      const t = normalize(text);
+      const t = normalize(stripHtml(text));
       if (!t) return;
 
       const ts = Date.now();
@@ -114,71 +131,198 @@
     };
   })();
 
-  const stopAll = () => {
+  const stopAllOutput = () => {
     try { speechSynthesis.cancel(); } catch {}
     if (liveRegion) liveRegion.textContent = "";
     engine.lastText = "";
-    engine.lastEmitted = "";
+    engine.lastEmitText = "";
+    engine.lastEmitAt = 0;
     updateOverlay();
   };
 
-  // ----- Overlay (demo simple, igual estilo probe) -----
+  // ----- Overlay (Pill + Panel) -----
+  let overlayRoot = null;
+  let overlayPanel = null;
+  let overlayPill = null;
+  let overlayStatus = null;
+  let overlayText = null;
+  let overlayTrackSelect = null;
+  let overlayModoSelect = null;
+  let overlayFuenteSelect = null;
+
   const ensureOverlay = () => {
-    let box = document.getElementById("kathware-overlay");
-    if (!box) {
-      box = document.createElement("div");
-      box.id = "kathware-overlay";
-      box.style.position = "fixed";
-      box.style.left = "16px";
-      box.style.bottom = "16px";
-      box.style.maxWidth = "75vw";
-      box.style.zIndex = "2147483647";
-      box.style.pointerEvents = "none";
-      box.style.padding = "12px 14px";
-      box.style.borderRadius = "12px";
-      box.style.background = "rgba(0,0,0,0.78)";
-      box.style.color = "#fff";
-      box.style.fontSize = "16px";
-      box.style.lineHeight = "1.35";
-      box.style.fontFamily =
-        "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif";
-      box.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
-      box.innerHTML = `
-        <div id="kathware-overlay-status" style="opacity:.9;font-size:13px;margin-bottom:6px;"></div>
-        <div id="kathware-overlay-text" style="white-space:pre-wrap;"></div>
-        <div style="opacity:.7;font-size:12px;margin-top:8px;">
-          Hotkeys: Ctrl+Alt+K ON/OFF | Ctrl+Alt+L modo
-        </div>
-      `;
-      document.documentElement.appendChild(box);
-    }
-    return box;
-  };
+    if (overlayRoot) return;
 
-  const overlay = (() => {
-    const box = ensureOverlay();
-    const statusEl = box.querySelector("#kathware-overlay-status");
-    const textEl = box.querySelector("#kathware-overlay-text");
+    overlayRoot = document.createElement("div");
+    overlayRoot.id = "kathware-overlay-root";
+    Object.assign(overlayRoot.style, {
+      position: "fixed",
+      right: "14px",
+      bottom: "14px",
+      zIndex: "2147483647",
+      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
+    });
 
-    const render = ({ enabled, outputMode, sourceMode, trackInfo, state, text }) => {
-      const modeEmoji =
-        outputMode === "live" ? "🧏" :
-        outputMode === "tts"  ? "🗣️" :
-        outputMode === "both" ? "🧏+🗣️" : "🙊";
+    overlayPanel = document.createElement("div");
+    overlayPanel.id = "kathware-overlay-panel";
+    Object.assign(overlayPanel.style, {
+      display: "none",
+      marginBottom: "10px",
+      padding: "12px 14px",
+      borderRadius: "12px",
+      background: "rgba(0,0,0,0.78)",
+      color: "#fff",
+      maxWidth: "75vw",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.25)"
+    });
 
-      const srcEmoji = sourceMode === "track" ? "🎛️TRACK" : "👀VISUAL";
+    overlayStatus = document.createElement("div");
+    Object.assign(overlayStatus.style, {
+      opacity: ".9",
+      fontSize: "13px",
+      marginBottom: "6px"
+    });
 
-      statusEl.textContent =
-        `${enabled ? "🟢 ON" : "🔴 OFF"} ${modeEmoji} ${outputMode.toUpperCase()} | ${srcEmoji} | ${state} | ${trackInfo}`;
-      textEl.textContent = text || "";
+    overlayText = document.createElement("div");
+    Object.assign(overlayText.style, {
+      whiteSpace: "pre-wrap",
+      fontSize: "16px",
+      lineHeight: "1.35"
+    });
 
-      box.style.display = enabled ? "block" : "none";
+    const settingsRow = document.createElement("div");
+    Object.assign(settingsRow.style, {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: "8px",
+      marginTop: "10px"
+    });
+
+    overlayModoSelect = document.createElement("select");
+    overlayModoSelect.setAttribute("aria-label", "Modo de lectura");
+    overlayModoSelect.innerHTML = `
+      <option value="off">Desactivado</option>
+      <option value="sintetizador">Voz</option>
+      <option value="lector">Lector</option>
+    `;
+
+    overlayFuenteSelect = document.createElement("select");
+    overlayFuenteSelect.setAttribute("aria-label", "Fuente de subtítulos");
+    overlayFuenteSelect.innerHTML = `
+      <option value="auto">Auto</option>
+      <option value="track">TRACK</option>
+      <option value="visual">VISUAL</option>
+    `;
+
+    settingsRow.appendChild(overlayModoSelect);
+    settingsRow.appendChild(overlayFuenteSelect);
+
+    overlayTrackSelect = document.createElement("select");
+    overlayTrackSelect.setAttribute("aria-label", "Pista de subtítulos");
+    overlayTrackSelect.style.marginTop = "8px";
+    overlayTrackSelect.innerHTML = `<option value="0">Pista 1</option>`;
+
+    const hint = document.createElement("div");
+    hint.style.opacity = ".7";
+    hint.style.fontSize = "12px";
+    hint.style.marginTop = "8px";
+    hint.textContent = "Hotkeys: Ctrl+Alt+K ON/OFF | Ctrl+Alt+O Panel | Ctrl+Alt+L Modo";
+
+    const mkBtn = (label, onClick, aria) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      if (aria) b.setAttribute("aria-label", aria);
+      Object.assign(b.style, {
+        padding: "6px 10px",
+        borderRadius: "10px",
+        border: "0",
+        cursor: "pointer"
+      });
+      b.addEventListener("click", onClick);
+      return b;
     };
 
-    return { render };
-  })();
+    const controlsRow = document.createElement("div");
+    Object.assign(controlsRow.style, {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "8px",
+      marginTop: "10px"
+    });
 
-  // ----- Tracks helpers -----
+    const btnPlay  = mkBtn("▶️", () => video?.play?.(), "Reproducir");
+    const btnPause = mkBtn("⏸️", () => video?.pause?.(), "Pausar");
+    const btnBack  = mkBtn("⏪", () => seekBy(-10), "Atrasar 10 segundos");
+    const btnFwd   = mkBtn("⏩", () => seekBy(+10), "Adelantar 10 segundos");
+    const btnMute  = mkBtn("M",  () => toggleMute(), "Silenciar / Activar sonido");
+    const btnCC    = mkBtn("C",  () => toggleCaptions(), "Subtítulos (si hay tracks)");
+    const btnFull  = mkBtn("⛶", () => requestFull(), "Pantalla completa");
+    const btnClose = mkBtn("Cerrar", () => setPanelOpen(false), "Cerrar panel");
+
+    controlsRow.append(btnPlay, btnPause, btnBack, btnFwd, btnMute, btnCC, btnFull, btnClose);
+
+    overlayPanel.append(overlayStatus, overlayText, settingsRow, overlayTrackSelect, controlsRow, hint);
+
+    overlayPill = document.createElement("button");
+    overlayPill.type = "button";
+    overlayPill.setAttribute("aria-label", "Abrir KathWare Media Player");
+    overlayPill.textContent = "KW";
+    Object.assign(overlayPill.style, {
+      width: "46px",
+      height: "46px",
+      borderRadius: "999px",
+      border: "0",
+      cursor: "pointer",
+      background: "rgba(0,0,0,0.78)",
+      color: "#fff",
+      fontWeight: "700",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.25)"
+    });
+
+    overlayPill.addEventListener("click", () => {
+      const open = overlayPanel.style.display !== "none";
+      setPanelOpen(!open);
+    });
+
+    overlayRoot.append(overlayPanel, overlayPill);
+    document.documentElement.appendChild(overlayRoot);
+
+    overlayModoSelect.addEventListener("change", () => {
+      // sincroniza con tu select externo si existe
+      if (modoNarrador) modoNarrador.value = overlayModoSelect.value;
+      syncFromUI();
+      if (overlayModoSelect.value === "off") stopAllOutput();
+      updateOverlay();
+    });
+
+    overlayFuenteSelect.addEventListener("change", () => {
+      if (fuenteSub) fuenteSub.value = overlayFuenteSelect.value;
+      syncFromUI();
+      if (CFG.enabled) restartPipeline();
+      updateOverlay();
+    });
+
+    overlayTrackSelect.addEventListener("change", () => {
+      const idx = Number(overlayTrackSelect.value);
+      if (Number.isFinite(idx)) {
+        CFG.trackIndex = idx;
+        if (CFG.enabled) restartPipeline();
+        updateOverlay();
+      }
+    });
+  };
+
+  const setPanelOpen = (open) => {
+    ensureOverlay();
+    overlayPanel.style.display = open ? "block" : "none";
+  };
+
+  const updateOverlayText = (text) => {
+    if (!overlayRoot) return;
+    overlayText.textContent = text || "";
+  };
+
   const describeTrack = (t) => {
     if (!t) return "Sin track";
     let cuesLen = "?";
@@ -186,19 +330,56 @@
     return `${t.label || "(sin label)"} lang=${t.language || "??"} mode=${t.mode} cues=${cuesLen}`;
   };
 
-  const pickBestTrack = (v) => {
-    const list = Array.from(v?.textTracks || []);
-    if (!list.length) return null;
+  const updateOverlayTracksList = () => {
+    if (!overlayRoot) return;
+    const tracks = video?.textTracks ? Array.from(video.textTracks) : [];
+    overlayTrackSelect.innerHTML = "";
 
-    return (
-      list.find(t => t.mode === "showing") ||
-      list.find(t => t.mode === "hidden" && t.cues && t.cues.length) ||
-      list.find(t => t.mode === "hidden") ||
-      list[0] ||
-      null
-    );
+    if (!tracks.length) {
+      const opt = document.createElement("option");
+      opt.value = "0";
+      opt.textContent = "Sin pistas";
+      overlayTrackSelect.appendChild(opt);
+      overlayTrackSelect.disabled = true;
+      return;
+    }
+
+    tracks.forEach((t, idx) => {
+      const opt = document.createElement("option");
+      opt.value = String(idx);
+      opt.textContent = (t.label || t.language || `Pista ${idx + 1}`);
+      overlayTrackSelect.appendChild(opt);
+    });
+
+    overlayTrackSelect.disabled = false;
+    overlayTrackSelect.value = String(Math.max(0, Math.min(CFG.trackIndex, tracks.length - 1)));
   };
 
+  const updateOverlay = () => {
+    ensureOverlay();
+
+    const enabled = CFG.enabled ? "🟢 ON" : "🔴 OFF";
+    const modeEmoji =
+      CFG.outputMode === "live" ? "🧏" :
+      CFG.outputMode === "tts" ? "🗣️" : "🙊";
+
+    const src =
+      CFG.sourceMode === "track" ? "🎛️TRACK" :
+      CFG.sourceMode === "visual" ? "👀VISUAL" :
+      `🤖AUTO→${engine.effectiveFuente.toUpperCase()}`;
+
+    overlayModoSelect.value = (modoNarrador?.value || overlayModoSelect.value || "lector");
+    overlayFuenteSelect.value = (fuenteSub?.value || overlayFuenteSelect.value || "auto");
+
+    const trackInfo = engine.currentTrack ? describeTrack(engine.currentTrack) : "Sin track";
+    overlayStatus.textContent = `${enabled} ${modeEmoji} | ${src} | ${trackInfo}`;
+
+    // pill siempre visible; panel no
+    overlayRoot.style.display = "block";
+    updateOverlayTracksList();
+  };
+
+  // ----- Sub/Track helpers -----
   const readActiveCues = (track) => {
     try {
       const active = track?.activeCues ? Array.from(track.activeCues) : [];
@@ -209,138 +390,391 @@
     }
   };
 
-  const readVisualCaption = () => {
-    // Para demo: si usás Plyr o similar, esto puede servir.
-    const el = document.querySelector(
-      ".plyr__caption, .flirc-caption, [class*='caption'], [class*='cc'], [aria-label*='closed']"
-    );
-    return normalize(stripHtml(el?.textContent || ""));
+  const trackSeemsUsable = (track) => {
+    if (!track) return false;
+    try { if (track.mode === "disabled") track.mode = "hidden"; } catch {}
+    try {
+      const txt = readActiveCues(track);
+      if (txt) return true;
+      const len = track.cues ? track.cues.length : 0;
+      if (len > 0) return true;
+    } catch {}
+    return false;
   };
 
-  // ----- Engine -----
+  const videoHasUsableTracks = () => {
+    const list = Array.from(video?.textTracks || []);
+    if (!list.length) return false;
+    return list.some(trackSeemsUsable);
+  };
+
+  const pickBestTrack = () => {
+    const list = Array.from(video?.textTracks || []);
+    if (!list.length) return null;
+
+    const idx = Math.max(0, Math.min(CFG.trackIndex, list.length - 1));
+    return (
+      list[idx] ||
+      list.find(t => t.mode === "showing") ||
+      list.find(t => t.mode === "hidden" && t.cues && t.cues.length) ||
+      list.find(t => t.mode === "hidden") ||
+      list[0] ||
+      null
+    );
+  };
+
+  // ----- VISUAL capture (local) -----
+  // Si tu reproductor local muestra captions en un div, agregá tu selector acá.
+  const visualSelectors = [
+    ".plyr__caption",
+    ".flirc-caption",
+    "[class*='caption']",
+    "[class*='subtit']",
+    "[class*='cc']",
+    "[aria-live='polite']",
+    "[role='status']"
+  ];
+
+  const looksLikeNoise = (node, text) => {
+    const t = normalize(text);
+    if (!t) return true;
+    if (t.length < 2 || t.length > 260) return true;
+
+    const tag = (node?.tagName || "").toUpperCase();
+    if (["A","BUTTON","INPUT","TEXTAREA","SELECT","LABEL"].includes(tag)) return true;
+
+    const cls = ((node?.className || "") + " " + (node?.id || "")).toLowerCase();
+    if (/toast|snack|tooltip|popover|modal|dialog|notif|banner|sr-only|screenreader-only/.test(cls)) return true;
+
+    return false;
+  };
+
+  const pickBestVisualNode = () => {
+    const nodes = [];
+    for (const sel of visualSelectors) {
+      try { document.querySelectorAll(sel).forEach(n => nodes.push(n)); } catch {}
+    }
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      const t = normalize(n?.textContent);
+      if (!looksLikeNoise(n, t)) return n;
+    }
+    return null;
+  };
+
+  // ----- Player controls -----
+  const seekBy = (delta) => {
+    try {
+      const dur = Number.isFinite(video.duration) ? video.duration : (video.currentTime + delta);
+      video.currentTime = Math.max(0, Math.min((video.currentTime || 0) + delta, dur));
+    } catch {}
+  };
+
+  const toggleMute = () => {
+    try { video.muted = !video.muted; } catch {}
+  };
+
+  const requestFull = () => {
+    try { video.requestFullscreen?.(); } catch {}
+  };
+
+  const toggleCaptions = () => {
+    const tracks = Array.from(video?.textTracks || []);
+    if (!tracks.length) return;
+
+    const t = engine.currentTrack || pickBestTrack();
+    if (!t) return;
+
+    try {
+      if (t.mode === "showing") t.mode = "hidden";
+      else if (t.mode === "hidden") t.mode = "showing";
+      else t.mode = "hidden";
+      engine.currentTrack = t;
+      updateOverlay();
+    } catch {}
+  };
+
+  // ----- Sync UI -> CFG -----
+  const syncFromUI = () => {
+    const m = modoNarrador?.value || "lector";
+    if (m === "off") CFG.outputMode = "none";
+    else if (m === "lector") CFG.outputMode = "live";
+    else if (m === "sintetizador") CFG.outputMode = "tts";
+
+    const f = (fuenteSub?.value || "auto").toLowerCase();
+    CFG.sourceMode = (f === "visual") ? "visual" : (f === "track") ? "track" : "auto";
+    updateOverlay();
+  };
+
+  // ----- Engine (rehook + polling + observer visual) -----
   const engine = {
-    track: null,
-    lastText: "",
-    lastEmitted: "",
-    pollTimer: null,
+    currentTrack: null,
+    visualNode: null,
+    visualObserver: null,
+    visualObserverActive: false,
+
+    lastEmitText: "",
+    lastEmitAt: 0,
+    lastTrackSeen: "",
+    lastVisualSeen: "",
+    lastSig: "",
+
+    effectiveFuente: "visual",
+
+    pollTimerTrack: null,
+    pollTimerVisual: null,
     rehookTimer: null,
+    visualReselectTimer: null,
+
+    shouldEmit(t) {
+      const now = Date.now();
+      if (!t) return false;
+      if (t === this.lastEmitText && (now - this.lastEmitAt) < CFG.burstMs) return false;
+      if (t === this.lastEmitText && (now - this.lastEmitAt) < CFG.cooldownMs) return false;
+      this.lastEmitText = t;
+      this.lastEmitAt = now;
+      return true;
+    },
 
     output(text) {
       const t = normalize(stripHtml(text));
       if (!t) return;
+      if (!this.shouldEmit(t)) return;
 
       this.lastText = t;
-      updateOverlay();
+      updateOverlayText(t);
 
       if (!CFG.enabled) return;
+      if (!shouldReadNow()) return;
 
       if (CFG.outputMode === "live") pushToLiveRegion(t);
       else if (CFG.outputMode === "tts") speakTTS(t);
-      else if (CFG.outputMode === "both") { pushToLiveRegion(t); speakTTS(t); }
       else { /* none */ }
+    },
+
+    stopVisualObserver() {
+      try { this.visualObserver?.disconnect?.(); } catch {}
+      this.visualObserver = null;
+      this.visualObserverActive = false;
+    },
+
+    startVisual() {
+      this.stopVisualObserver();
+      if (!this.visualNode) this.visualNode = pickBestVisualNode();
+
+      if (!this.visualNode) {
+        this.visualObserverActive = false;
+        return;
+      }
+
+      try {
+        this.visualObserver = new MutationObserver(() => {
+          if (!CFG.enabled) return;
+          if (this.effectiveFuente !== "visual") return;
+          if (!shouldReadNow()) return;
+
+          const t = normalize(this.visualNode?.textContent || "");
+          if (!t) return;
+          if (looksLikeNoise(this.visualNode, t)) return;
+          if (t === this.lastVisualSeen) return;
+
+          this.lastVisualSeen = t;
+          this.output(t);
+        });
+
+        this.visualObserver.observe(this.visualNode, { childList: true, subtree: true, characterData: true });
+        this.visualObserverActive = true;
+      } catch {
+        this.visualObserverActive = false;
+      }
     },
 
     attachTrack(track) {
       if (!track) return;
-
       try { if (track.mode === "disabled") track.mode = "hidden"; } catch {}
       try { track.oncuechange = null; } catch {}
 
       track.oncuechange = () => {
-        if (CFG.sourceMode !== "track") return;
+        if (!CFG.enabled) return;
+        if (this.effectiveFuente !== "track") return;
+        if (!shouldReadNow()) return;
+
         const txt = readActiveCues(track);
-        if (txt) {
-          log("🎯 cuechange:", txt);
-          this.lastEmitted = txt;
-          this.output(txt);
-        }
+        if (!txt) return;
+        if (txt === this.lastTrackSeen) return;
+
+        this.lastTrackSeen = txt;
+        this.output(txt);
       };
 
       const initial = readActiveCues(track);
-      if (initial) {
-        log("▶️ activeCues inicial:", initial);
-        this.lastEmitted = initial;
+      if (initial && initial !== this.lastTrackSeen) {
+        this.lastTrackSeen = initial;
         this.output(initial);
       }
     },
 
-    rebind() {
-      const best = pickBestTrack(video);
-      if (best !== this.track) {
-        this.track = best;
-        log("🔄 Rebind track =>", describeTrack(best));
-        if (best) this.attachTrack(best);
+    startTrack() {
+      const best = pickBestTrack();
+      if (!best) { this.currentTrack = null; return false; }
+      if (!trackSeemsUsable(best)) { this.currentTrack = null; return false; }
+
+      if (best !== this.currentTrack) {
+        this.currentTrack = best;
+        this.attachTrack(best);
       }
-      updateOverlay();
+      return true;
     },
 
-    poll() {
+    pollTrackTick() {
       if (!CFG.enabled) return;
+      if (this.effectiveFuente !== "track") return;
+      if (!this.currentTrack) return;
+      if (!shouldReadNow()) return;
 
-      if (CFG.sourceMode === "track" && this.track) {
-        const txt = readActiveCues(this.track);
-        if (txt && txt !== this.lastEmitted) {
-          log("⏱️ poll(track):", txt);
-          this.lastEmitted = txt;
-          this.output(txt);
-        }
+      const txt = readActiveCues(this.currentTrack);
+      if (!txt) return;
+      if (txt === this.lastTrackSeen) return;
+
+      this.lastTrackSeen = txt;
+      this.output(txt);
+    },
+
+    pollVisualTick() {
+      if (!CFG.enabled) return;
+      if (this.effectiveFuente !== "visual") return;
+      if (!shouldReadNow()) return;
+
+      if (!this.visualNode) {
+        this.visualNode = pickBestVisualNode();
+        if (this.visualNode) this.startVisual();
         return;
       }
 
-      if (CFG.sourceMode === "visual") {
-        const txt = readVisualCaption();
-        if (txt && txt !== this.lastEmitted) {
-          log("⏱️ poll(visual):", txt);
-          this.lastEmitted = txt;
-          this.output(txt);
-        }
+      if (this.visualObserverActive) return;
+
+      const t = normalize(this.visualNode.textContent || "");
+      if (!t) return;
+      if (looksLikeNoise(this.visualNode, t)) return;
+      if (t === this.lastVisualSeen) return;
+
+      this.lastVisualSeen = t;
+      this.output(t);
+    },
+
+    computeSig() {
+      const vSig = (video.currentSrc || video.src || "v");
+      const t = (this.effectiveFuente === "track") ? pickBestTrack() : null;
+      const tSig = t ? (t.label + "|" + t.language + "|" + t.mode) : "noT";
+      let cues = 0;
+      try { cues = t?.cues?.length || 0; } catch {}
+      return `${vSig}|${tSig}|${cues}|src=${CFG.sourceMode}|idx=${CFG.trackIndex}`;
+    },
+
+    rehookTick() {
+      if (!CFG.enabled) return;
+
+      const hasUsable = videoHasUsableTracks();
+      this.effectiveFuente =
+        CFG.sourceMode === "auto" ? (hasUsable ? "track" : "visual")
+        : (CFG.sourceMode === "track" ? "track" : "visual");
+
+      // switch cleanup
+      if (this.effectiveFuente === "track") {
+        this.stopVisualObserver();
+        this.visualNode = null;
+      } else {
+        try { if (this.currentTrack) this.currentTrack.oncuechange = null; } catch {}
+        this.currentTrack = null;
       }
+
+      const sig = this.computeSig();
+      if (sig === this.lastSig) return;
+      this.lastSig = sig;
+
+      if (this.effectiveFuente === "track") {
+        const ok = this.startTrack();
+        if (!ok) {
+          this.effectiveFuente = "visual";
+          this.startVisual();
+        }
+      } else {
+        this.startVisual();
+      }
+
+      updateOverlay();
+      updateOverlayTracksList();
     },
 
     start() {
-      this.syncFromUI();
-      this.rebind();
-      this.pollTimer = setInterval(() => this.poll(), CFG.pollMs);
-      this.rehookTimer = setInterval(() => this.rebind(), CFG.rehookMs);
-      log("🚀 Engine demo iniciado");
+      syncFromUI();
+      this.rehookTick();
+
+      this.rehookTimer = setInterval(() => this.rehookTick(), CFG.rehookMs);
+      this.pollTimerTrack = setInterval(() => this.pollTrackTick(), CFG.pollMsTrack);
+      this.pollTimerVisual = setInterval(() => this.pollVisualTick(), CFG.pollMsVisual);
+
+      this.visualReselectTimer = setInterval(() => {
+        if (!CFG.enabled) return;
+        if (this.effectiveFuente !== "visual") return;
+
+        const prev = this.visualNode;
+        const next = pickBestVisualNode() || prev;
+        if (next && next !== prev) {
+          this.visualNode = next;
+          this.startVisual();
+        }
+      }, CFG.visualReselectMs);
+
+      log("🚀 Engine demo iniciado (panel + auto)");
     },
 
     destroy() {
-      try { clearInterval(this.pollTimer); } catch {}
       try { clearInterval(this.rehookTimer); } catch {}
-      this.pollTimer = null;
-      this.rehookTimer = null;
-      stopAll();
-    },
-
-    syncFromUI() {
-      // modoNarrador -> outputMode
-      const m = modoNarrador?.value || "off";
-      if (m === "off") CFG.outputMode = "none";
-      else if (m === "lector") CFG.outputMode = "live";
-      else if (m === "sintetizador") CFG.outputMode = "tts";
-      // fuenteSub -> sourceMode
-      const f = fuenteSub?.value || "track";
-      CFG.sourceMode = (f === "visual") ? "visual" : "track";
-
-      updateOverlay();
+      try { clearInterval(this.pollTimerTrack); } catch {}
+      try { clearInterval(this.pollTimerVisual); } catch {}
+      try { clearInterval(this.visualReselectTimer); } catch {}
+      this.rehookTimer = this.pollTimerTrack = this.pollTimerVisual = this.visualReselectTimer = null;
+      try { if (this.currentTrack) this.currentTrack.oncuechange = null; } catch {}
+      this.currentTrack = null;
+      this.stopVisualObserver();
+      this.visualNode = null;
+      stopAllOutput();
+      log("🧹 Engine demo destruido");
     },
   };
 
-  const updateOverlay = () => {
-    const state = engine.track ? ((engine.track.mode === "showing" || engine.track.mode === "hidden") ? "ACTIVO" : "INACTIVO") : "SIN TRACK";
-    overlay.render({
-      enabled: CFG.enabled,
-      outputMode: CFG.outputMode,
-      sourceMode: CFG.sourceMode,
-      trackInfo: engine.track ? describeTrack(engine.track) : "Sin track",
-      state,
-      text: engine.lastText || ""
-    });
+  // ----- UI wiring -----
+  modoNarrador?.addEventListener("change", () => {
+    syncFromUI();
+    if (modoNarrador.value === "off") stopAllOutput();
+    updateOverlay();
+  });
+
+  fuenteSub?.addEventListener("change", () => {
+    syncFromUI();
+    if (CFG.enabled) restartPipeline();
+    updateOverlay();
+  });
+
+  const restartPipeline = () => {
+    try { if (engine.currentTrack) engine.currentTrack.oncuechange = null; } catch {}
+    engine.currentTrack = null;
+    engine.stopVisualObserver();
+    engine.visualNode = null;
+
+    engine.lastTrackSeen = "";
+    engine.lastVisualSeen = "";
+    engine.lastEmitText = "";
+    engine.lastEmitAt = 0;
+    engine.lastSig = "";
+
+    engine.rehookTick();
+    updateOverlay();
   };
 
   // ----- Local file loading -----
-  const srtToVtt = (srt) => "WEBVTT\n\n" + srt.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
+  const srtToVtt = (srt) => "WEBVTT\n\n" + String(srt).replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, "$1.$2");
 
   inputVideo?.addEventListener("change", (e) => {
     const file = e.target.files?.[0];
@@ -349,6 +783,7 @@
     video.src = url;
     video.load();
     log("🎥 Video cargado:", file.name);
+    setTimeout(() => restartPipeline(), 200);
   });
 
   inputSubs?.addEventListener("change", (e) => {
@@ -369,27 +804,20 @@
       trackEl.srclang = "es";
       trackEl.src = URL.createObjectURL(blob);
       trackEl.default = true;
+
+      // (opcional) remover tracks previos si querés 1 solo
+      // Array.from(video.querySelectorAll("track")).forEach(t => t.remove());
+
       video.appendChild(trackEl);
 
-      setTimeout(() => engine.rebind(), 350);
+      setTimeout(() => restartPipeline(), 350);
       log("💬 Subtítulos cargados:", file.name);
     };
 
     reader.readAsText(file);
   });
 
-  // ----- UI listeners -----
-  modoNarrador?.addEventListener("change", () => {
-    engine.syncFromUI();
-    if (modoNarrador.value === "off") stopAll();
-  });
-
-  fuenteSub?.addEventListener("change", () => {
-    engine.syncFromUI();
-    engine.rebind();
-  });
-
-  // ----- Hotkeys (igual que probe) -----
+  // ----- Hotkeys -----
   const matchHotkey = (e, hk) => {
     const key = (e.key || "").toLowerCase();
     return (
@@ -403,29 +831,23 @@
   const toggleEnabled = () => {
     CFG.enabled = !CFG.enabled;
     log(CFG.enabled ? "🟢 ENABLED" : "🔴 DISABLED");
-    if (!CFG.enabled) stopAll();
+    if (!CFG.enabled) stopAllOutput();
     updateOverlay();
   };
 
   const cycleMode = () => {
-    const modes = ["live", "tts", "both", "none"];
-    const i = modes.indexOf(CFG.outputMode);
-    CFG.outputMode = modes[(i + 1) % modes.length];
-    log("🔁 outputMode =>", CFG.outputMode);
-
-    // Si querés que el select refleje el cambio:
-    if (modoNarrador) {
-      if (CFG.outputMode === "none") modoNarrador.value = "off";
-      else if (CFG.outputMode === "live") modoNarrador.value = "lector";
-      else if (CFG.outputMode === "tts") modoNarrador.value = "sintetizador";
-      // "both" no existe en el select: lo dejamos como estaba
-    }
-
+    // lector -> voz -> off
+    const order = ["lector", "sintetizador", "off"];
+    const cur = modoNarrador?.value || "lector";
+    const i = order.indexOf(cur);
+    const next = order[(i + 1) % order.length];
+    if (modoNarrador) modoNarrador.value = next;
+    syncFromUI();
+    if (next === "off") stopAllOutput();
     updateOverlay();
   };
 
   document.addEventListener("keydown", (e) => {
-    // No secuestrar cuando escribe
     const ae = document.activeElement;
     const typing =
       ae &&
@@ -442,28 +864,48 @@
       e.preventDefault();
       e.stopPropagation();
       cycleMode();
+      return;
+    }
+    if (matchHotkey(e, CFG.hotkeys.panel)) {
+      e.preventDefault();
+      e.stopPropagation();
+      ensureOverlay();
+      const open = overlayPanel && overlayPanel.style.display !== "none";
+      setPanelOpen(!open);
+      return;
     }
   }, true);
 
-  // ----- Start -----
+  // ----- Init -----
   loadVoice();
+  ensureOverlay();     // pill siempre visible desde el arranque
+  setPanelOpen(false); // panel a pedido
+  syncFromUI();
+  updateOverlay();
   engine.start();
 
-  // Debug API para la demo
+  // Debug API
   window.__kathware_demo = {
     toggle: toggleEnabled,
     mode: cycleMode,
+    panel: () => {
+      ensureOverlay();
+      const open = overlayPanel && overlayPanel.style.display !== "none";
+      setPanelOpen(!open);
+    },
     status: () => ({
       enabled: CFG.enabled,
       outputMode: CFG.outputMode,
       sourceMode: CFG.sourceMode,
-      track: engine.track ? describeTrack(engine.track) : null,
-      lastText: engine.lastText,
+      effectiveFuente: engine.effectiveFuente,
+      trackIndex: CFG.trackIndex,
+      track: engine.currentTrack ? describeTrack(engine.currentTrack) : null,
+      lastText: engine.lastText || "",
     }),
-    rebind: () => engine.rebind(),
+    restart: () => restartPipeline(),
     destroy: () => engine.destroy(),
   };
 
-  log("✅ Demo lista. API: __kathware_demo.status() / toggle() / mode() / rebind()");
+  log("✅ Demo lista. API: __kathware_demo.status() / toggle() / mode() / panel() / restart()");
 })();
 </script>
