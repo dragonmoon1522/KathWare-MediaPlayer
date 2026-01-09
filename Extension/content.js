@@ -4,7 +4,7 @@
 //
 // ✅ Pill SIEMPRE visible (panel a pedido del usuario)
 // ✅ ON/OFF con Ctrl+Alt+K (fallback in-page)
-// ✅ Flow A11y: dynamic labeling SIN refresco infinito (firma de controles)
+// ✅ Flow A11y: dynamic labeling SIN spam (firma estable + conteo real)
 // ✅ Captura menú "Audio y subtítulos" cuando se despliega
 // Compat: Chromium (chrome.*) + Firefox (browser.*)
 // ====================================================
@@ -38,14 +38,12 @@
     volStep: 0.05,
 
     // Hotkey fallback in-page (si commands no está o choca)
-    // ✅ pedido: Ctrl+Alt+K
     hotkeys: {
-      toggle: { ctrl: true, alt: true,  shift: false, key: "k" },
+      toggle: { ctrl: true, alt: true,  shift: false, key: "k" }, // ✅ Ctrl+Alt+K
       mode:   { ctrl: true, alt: true,  shift: false, key: "l" },
       panel:  { ctrl: true, alt: true,  shift: false, key: "o" },
     },
 
-    // UI behavior
     autoOpenPanelOnSubs: false,
   };
 
@@ -106,7 +104,7 @@
   let toastEl = null;
   let toastTimer = null;
 
-  // Dedupe
+  // Dedupe lectura
   let lastEmitText = "";
   let lastEmitAt = 0;
 
@@ -328,15 +326,6 @@
       if (!res.ok) {
         console.warn("[KathWare] TTS FALLÓ:", res);
         console.warn("[KathWare] Voices debug:", listVoicesDebug());
-        try {
-          console.warn("[KathWare] speechSynthesis state:", {
-            speaking: speechSynthesis.speaking,
-            pending: speechSynthesis.pending,
-            paused: speechSynthesis.paused
-          });
-        } catch {}
-      } else {
-        CFG.debug && console.log("[KathWare] TTS OK:", res);
       }
     }
   }
@@ -579,8 +568,7 @@
 
   function updateOverlayStatus() {
     if (!overlayRoot) return;
-    const p = getPlatform();
-    const label = platformLabel(p);
+    const label = platformLabel(getPlatform());
 
     const enabled = extensionActiva ? "🟢 ON" : "🔴 OFF";
     const modeEmoji =
@@ -641,11 +629,9 @@
   function trackSeemsUsable(track) {
     if (!track) return false;
     try { if (track.mode === "disabled") track.mode = "hidden"; } catch (_) {}
-
     try {
       const txt = readActiveCues(track);
       if (txt) return true;
-
       const len = track.cues ? track.cues.length : 0;
       if (len > 0) return true;
     } catch (_) {
@@ -716,7 +702,6 @@
     }
 
     if (!trackSeemsUsable(best)) {
-      log("TRACK no usable, fallback a VISUAL:", describeTrack(best));
       currentTrack = null;
       updateOverlayStatus();
       return false;
@@ -748,60 +733,12 @@
 
   // -------------------- VISUAL pipeline --------------------
   function platformSelectors(p) {
-    if (p === "flow") {
-      return [
-        ".theoplayer-ttml-texttrack-",
-        ".theoplayer-texttracks",
-        ".theoplayer-texttracks *"
-      ];
-    }
-    if (p === "max") {
-      return [
-        "[data-testid='cueBoxRowTextCue']",
-        "[data-testid*='cueBoxRowTextCue']",
-        "[class*='TextCue']"
-      ];
-    }
-    if (p === "netflix") {
-      return [
-        ".player-timedtext-text-container",
-        ".player-timedtext",
-        "span.player-timedtext-text",
-        "div[data-uia*='subtitle']",
-        "div[data-uia*='captions']"
-      ];
-    }
-    if (p === "disney") {
-      return [
-        "[class*='subtitle']",
-        "[class*='subtitles']",
-        "[class*='caption']",
-        "[class*='captions']",
-        "[class*='timedText']",
-        "[class*='timed-text']",
-        "[data-testid*='subtitle']",
-        "[data-testid*='caption']",
-        "[aria-label*='Subt']",
-        "[aria-live='polite']",
-        "[role='status']"
-      ];
-    }
-    if (p === "youtube") {
-      return [
-        ".ytp-caption-segment",
-        ".captions-text .caption-visual-line",
-        ".ytp-caption-window-container"
-      ];
-    }
-    return [
-      ".plyr__caption",
-      ".flirc-caption",
-      "[class*='subtitle']",
-      "[class*='caption']",
-      "[class*='cc']",
-      "[aria-live='polite']",
-      "[role='status']"
-    ];
+    if (p === "flow") return [".theoplayer-ttml-texttrack-", ".theoplayer-texttracks", ".theoplayer-texttracks *"];
+    if (p === "max") return ["[data-testid='cueBoxRowTextCue']", "[data-testid*='cueBoxRowTextCue']", "[class*='TextCue']"];
+    if (p === "netflix") return [".player-timedtext-text-container", ".player-timedtext", "span.player-timedtext-text", "div[data-uia*='subtitle']", "div[data-uia*='captions']"];
+    if (p === "disney") return ["[class*='subtitle']", "[class*='subtitles']", "[class*='caption']", "[class*='captions']", "[class*='timedText']", "[class*='timed-text']", "[data-testid*='subtitle']", "[data-testid*='caption']", "[aria-label*='Subt']", "[aria-live='polite']", "[role='status']"];
+    if (p === "youtube") return [".ytp-caption-segment", ".captions-text .caption-visual-line", ".ytp-caption-window-container"];
+    return [".plyr__caption", ".flirc-caption", "[class*='subtitle']", "[class*='caption']", "[class*='cc']", "[aria-live='polite']", "[role='status']"];
   }
 
   function looksLikeNoise(node, text) {
@@ -877,7 +814,6 @@
     }
 
     updateOverlayStatus();
-    log("VISUAL activo:", p);
   }
 
   function pollVisualTick() {
@@ -904,7 +840,7 @@
     leerTextoAccesible(t);
   }
 
-  // -------------------- Flow A11y labeling + menú Audio/Subtítulos --------------------
+  // -------------------- Flow A11y (fix anti-spam) --------------------
   function isVisibleEl(el) {
     if (!el || !el.getBoundingClientRect) return false;
     const r = el.getBoundingClientRect();
@@ -922,17 +858,19 @@
     return (x * y) > 120;
   }
 
+  function stableElKey(el) {
+    // 👇 NO usamos innerText (cambia). Esto es estable.
+    const tag = (el.tagName || "").toLowerCase();
+    const tid = el.getAttribute("data-testid") || "";
+    const role = el.getAttribute("role") || "";
+    const aria = el.getAttribute("aria-label") || "";
+    const cls = String(el.className || "").slice(0, 80);
+    return `${tag}|${tid}|${role}|${aria}|${cls}`;
+  }
+
   function flowControlsSignature(els) {
     try {
-      const parts = els
-        .slice(0, 80)
-        .map(el => {
-          const tid = el.getAttribute("data-testid") || "";
-          const aria = el.getAttribute("aria-label") || "";
-          const txt = normalize(el.innerText || el.textContent || "");
-          const cls = String(el.className || "").slice(0, 80);
-          return `${tid}|${aria}|${txt}|${cls}`;
-        });
+      const parts = els.slice(0, 120).map(stableElKey);
       return `${els.length}::${parts.join("§")}`;
     } catch (_) {
       return String(els.length);
@@ -958,7 +896,10 @@
     const prev = el.getAttribute("aria-label") || "";
     const prevAuto = el.getAttribute("data-kw-autolabel") === "1";
 
-    if (!prev || prevAuto) {
+    // ✅ solo tocamos si NO hay label, o si el label auto previo es distinto
+    const shouldSet = (!prev) || (prevAuto && prev !== t);
+
+    if (shouldSet) {
       el.setAttribute("aria-label", t);
       el.setAttribute("data-kw-autolabel", "1");
     }
@@ -966,7 +907,8 @@
     if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
     if (!el.getAttribute("role")) el.setAttribute("role", "button");
 
-    return 1;
+    // ✅ cuenta SOLO si realmente cambiamos algo
+    return shouldSet ? 1 : 0;
   }
 
   function labelFlowControls() {
@@ -997,7 +939,8 @@
       labeled += applyA11yLabel(el, label);
     }
 
-    if (CFG.debug && (labeled || labeled !== lastFlowLabeledCount)) {
+    // ✅ log SOLO si el número de cambios reales cambió
+    if (CFG.debug && labeled !== lastFlowLabeledCount) {
       console.log("[KathWare] FlowMode:", { mode: "dynamic-label", labeled, changed: true });
     }
     lastFlowLabeledCount = labeled;
@@ -1038,7 +981,7 @@
       labeled += applyA11yLabel(it, txt);
     }
 
-    if (CFG.debug) console.log("[KathWare] FlowMenu captured:", { labeledItems: labeled });
+    if (CFG.debug && labeled) console.log("[KathWare] FlowMenu captured:", { labeledItems: labeled });
     return labeled;
   }
 
@@ -1052,9 +995,7 @@
       for (const m of menus) labelFlowMenu(m);
     });
 
-    try {
-      flowMenuObserver.observe(document.documentElement, { childList: true, subtree: true });
-    } catch (_) {}
+    try { flowMenuObserver.observe(document.documentElement, { childList: true, subtree: true }); } catch (_) {}
   }
 
   function stopFlowMenuObserver() {
@@ -1076,7 +1017,6 @@
       const r = v.getBoundingClientRect();
       const x = r.left + r.width * 0.5;
       const y = r.top + r.height * 0.90;
-
       v.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
       v.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: x, clientY: y }));
     } catch (_) {}
@@ -1085,10 +1025,6 @@
   }
 
   // -------------------- Keyboard controls --------------------
-  function isNonAccessibleScenario() {
-    return getPlatform() === "flow";
-  }
-
   function seekBy(delta) {
     const v = currentVideo;
     if (!v) return;
@@ -1132,12 +1068,10 @@
   function handlePlayerHotkeys(e) {
     if (!extensionActiva) return false;
     if (isTyping()) return false;
-
-    // no interferir con combinaciones del sitio
     if (e.ctrlKey || e.altKey || e.metaKey) return false;
 
     const panelOpen = overlayPanel && overlayPanel.style.display !== "none";
-    if (!panelOpen && !isNonAccessibleScenario()) return false;
+    if (!panelOpen && getPlatform() !== "flow") return false;
 
     const key = (e.key || "").toLowerCase();
 
@@ -1149,20 +1083,10 @@
       return true;
     }
 
-    if (key === "arrowleft") {
-      e.preventDefault();
-      seekBy(e.shiftKey ? -CFG.seekBig : -CFG.seekSmall);
-      return true;
-    }
-    if (key === "arrowright") {
-      e.preventDefault();
-      seekBy(e.shiftKey ? +CFG.seekBig : +CFG.seekSmall);
-      return true;
-    }
-
+    if (key === "arrowleft") { e.preventDefault(); seekBy(e.shiftKey ? -CFG.seekBig : -CFG.seekSmall); return true; }
+    if (key === "arrowright"){ e.preventDefault(); seekBy(e.shiftKey ? +CFG.seekBig : +CFG.seekSmall); return true; }
     if (key === "j") { e.preventDefault(); seekBy(-CFG.seekBig); return true; }
     if (key === "l") { e.preventDefault(); seekBy(+CFG.seekBig); return true; }
-
     if (key === "m") { e.preventDefault(); toggleMute(); return true; }
     if (key === "c") { e.preventDefault(); toggleCaptions(); return true; }
     if (key === "f") { e.preventDefault(); requestFull(); return true; }
@@ -1261,12 +1185,7 @@
     try { clearInterval(pollTimerVisual); } catch (_) {}
     try { clearInterval(visualReselectTimer); } catch (_) {}
     try { clearInterval(keepControlsTimer); } catch (_) {}
-
-    pollTimerTrack = null;
-    rehookTimer = null;
-    pollTimerVisual = null;
-    visualReselectTimer = null;
-    keepControlsTimer = null;
+    pollTimerTrack = rehookTimer = pollTimerVisual = visualReselectTimer = keepControlsTimer = null;
   }
 
   function stopAll() {
@@ -1295,10 +1214,8 @@
       if (effectiveFuente !== "visual") return;
 
       if (!visualSelectors) visualSelectors = platformSelectors(getPlatform());
-
       const prev = visualNode;
       const next = pickBestVisualNode() || prev;
-
       if (next && next !== prev) {
         visualNode = next;
         startVisual();
@@ -1330,22 +1247,16 @@
   }
 
   function setUIVisible(visible) {
-    // ✅ Pill siempre visible
-    ensureOverlay();
-
-    if (visible) {
-      updateOverlayTracksList();
-      updateOverlayStatus();
-    } else {
-      // OFF: no destruimos UI, solo cerramos panel
+    ensureOverlay(); // ✅ pill siempre visible
+    if (!visible) {
       try { setPanelOpen(false); } catch (_) {}
-      updateOverlayStatus();
     }
+    updateOverlayTracksList();
+    updateOverlayStatus();
   }
 
   function toggleExtension() {
     extensionActiva = !extensionActiva;
-
     const label = platformLabel(getPlatform());
 
     if (extensionActiva) {
