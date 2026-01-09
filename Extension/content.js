@@ -3,10 +3,10 @@
 // Engine v4-ish (rehook + polling + overlay pill + TRACK/VISUAL)
 // - TRACK: lee video.textTracks (oncuechange + poll activeCues fallback)
 // - VISUAL: lee captions por selectores por plataforma + observer (poll solo fallback)
-// - Overlay: SOLO visible cuando usuario activa (Ctrl+Alt+K o command)
+// - Overlay: SOLO visible cuando usuario activa (Alt+Shift+K o command)
 // - KeepControls: mantiene visibles controles de reproductores “tímidos” (Flow/Max/Netflix)
 // - Flow A11y: etiqueta controles nativos del reproductor (in-place) - DYNAMIC LABELING
-// - ON/OFF: via command (background) + fallback hotkey in-page (Ctrl+Alt+K)
+// - ON/OFF: via command (background) + fallback hotkey in-page (Alt+Shift+K)
 // Compat: Chromium (chrome.*) + Firefox (browser.*)
 // ====================================================
 
@@ -39,7 +39,7 @@
     volStep: 0.05,
 
     // Hotkey fallback in-page (si commands no está o choca)
-    // PEDIDO: Ctrl+Alt+K
+    // PEDIDO: Alt+Shift+K
     hotkeys: {
       toggle: { ctrl: true, alt: false, shift: true, key: "k" },
       mode:   { ctrl: true, alt: true,  shift: false, key: "l" },
@@ -1420,6 +1420,6 @@
   // -------------------- Init (NO mostramos UI) --------------------
   cargarConfigDesdeStorage(() => {
     currentVideo = getMainVideo();
-    log("content.js listo en", location.hostname, "plataforma:", getPlatform(), "UI: a demanda (Ctrl+Alt+K)");
+    log("content.js listo en", location.hostname, "plataforma:", getPlatform(), "UI: a demanda (Alt+Shift+K)");
   });
 })();
