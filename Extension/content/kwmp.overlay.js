@@ -1,10 +1,25 @@
+// ====================================================
+// KathWare Media Player - kwmp.overlay.js
+// - UI (pill + panel) + controles del player + hotkeys player
+// - Importante: se crea SOLO cuando ensureOverlay() es llamado (lazy)
+// ====================================================
+
 (() => {
   const KWMP = window.KWMP;
   if (!KWMP || KWMP.overlay) return;
 
   const S = KWMP.state;
   const CFG = KWMP.CFG;
-  const { clamp, isTyping, normalize } = KWMP.utils;
+
+  const clamp = KWMP.utils?.clamp || ((n, min, max) => Math.min(max, Math.max(min, n)));
+  const isTyping = KWMP.utils?.isTyping || (() => {
+    const ae = document.activeElement;
+    if (!ae) return false;
+    const tag = (ae.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (ae.isContentEditable) return true;
+    return false;
+  });
 
   function ensureOverlay() {
     if (S.overlayRoot) return;
@@ -16,7 +31,8 @@
       right: "14px",
       bottom: "14px",
       zIndex: "2147483647",
-      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
+      fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
+      display: "none" // ✅ arranca oculto; pipeline lo muestra al activar
     });
 
     const panel = document.createElement("div");
@@ -138,14 +154,14 @@
     modoSelect.addEventListener("change", () => {
       S.modoNarradorGlobal = modoSelect.value;
       KWMP.api?.storage?.local?.set?.({ modoNarrador: S.modoNarradorGlobal });
-      if (S.modoNarradorGlobal === "off") KWMP.voice.detenerLectura();
+      if (S.modoNarradorGlobal === "off") KWMP.voice?.detenerLectura?.();
       updateOverlayStatus();
     });
 
     fuenteSelect.addEventListener("change", () => {
       S.fuenteSubGlobal = fuenteSelect.value;
       KWMP.api?.storage?.local?.set?.({ fuenteSub: S.fuenteSubGlobal });
-      if (S.extensionActiva) KWMP.pipeline.restartPipeline();
+      if (S.extensionActiva) KWMP.pipeline?.restartPipeline?.();
       updateOverlayStatus();
     });
 
@@ -154,21 +170,33 @@
       if (Number.isFinite(idx)) {
         S.trackIndexGlobal = idx;
         KWMP.api?.storage?.local?.set?.({ trackIndex: S.trackIndexGlobal });
-        if (S.extensionActiva) KWMP.pipeline.restartPipeline();
+        if (S.extensionActiva) KWMP.pipeline?.restartPipeline?.();
         updateOverlayStatus();
       }
     });
   }
 
+  // ✅ Nuevo: mostrar/ocultar TODO el overlay (pill + panel)
+  function setOverlayVisible(visible) {
+    if (!S.overlayRoot) return;
+    S.overlayRoot.style.display = visible ? "block" : "none";
+    if (!visible) {
+      // al ocultar, cerramos panel para evitar estados raros
+      try { S.overlayPanel.style.display = "none"; } catch {}
+    }
+  }
+
   function setPanelOpen(open) {
     ensureOverlay();
+    // Si abrimos panel, aseguramos que el root esté visible
+    setOverlayVisible(true);
     S.overlayPanel.style.display = open ? "block" : "none";
   }
 
   function updateOverlayText(t) {
     if (!S.overlayRoot) return;
     S.overlayText.textContent = t || "";
-    if (CFG.autoOpenPanelOnSubs && t && t.trim()) setPanelOpen(true);
+    if (CFG.autoOpenPanelOnSubs && t && String(t).trim()) setPanelOpen(true);
   }
 
   function describeTrack(t) {
@@ -222,8 +250,8 @@
 
     const trackInfo = S.currentTrack ? describeTrack(S.currentTrack) : "Sin track";
 
-    S.overlayModoSelect.value = S.modoNarradorGlobal;
-    S.overlayFuenteSelect.value = S.fuenteSubGlobal;
+    if (S.overlayModoSelect) S.overlayModoSelect.value = S.modoNarradorGlobal;
+    if (S.overlayFuenteSelect) S.overlayFuenteSelect.value = S.fuenteSubGlobal;
 
     S.overlayStatus.textContent = `${enabled} ${modeEmoji} | ${src} | ${label} | ${trackInfo}`;
   }
@@ -316,6 +344,7 @@
 
   KWMP.overlay = {
     ensureOverlay,
+    setOverlayVisible,
     setPanelOpen,
     updateOverlayText,
     describeTrack,
