@@ -17,13 +17,28 @@
       "128": "icons/icon128.png"
     }
   },
+
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": [
+        "content/kwmp.bootstrap.js",
+        "content/kwmp.utils.js",
+        "content/kwmp.platforms.js",
+        "content/kwmp.voice.js",
+        "content/kwmp.toast.js",
+        "content/kwmp.overlay.js",
+        "content/kwmp.video.js",
+        "content/kwmp.track.js",
+        "content/kwmp.visual.js",
+        "content/kwmp.flowA11y.js",
+        "content/kwmp.pipeline.js",
+        "content/kwmp.hotkeys.js"
+      ],
       "run_at": "document_idle"
     }
   ],
+
   "commands": {
     "toggle_kathware_narrator": {
       "suggested_key": {
