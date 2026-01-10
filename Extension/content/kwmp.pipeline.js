@@ -1,3 +1,9 @@
+// ====================================================
+// KathWare Media Player - kwmp.pipeline.js
+// - Control del pipeline: timers, rehook, toggle, init
+// - Importante: NO crea UI hasta que el usuario active (ON)
+// ====================================================
+
 (() => {
   const KWMP = window.KWMP;
   if (!KWMP || KWMP.pipeline) return;
@@ -28,7 +34,7 @@
     S.visualNode = null;
     S.visualSelectors = null;
 
-    KWMP.voice.detenerLectura();
+    KWMP.voice?.detenerLectura?.();
   }
 
   function startTimers() {
@@ -47,7 +53,6 @@
     S.visualReselectTimer = setInterval(() => {
       if (!S.extensionActiva) return;
       if (S.effectiveFuente !== "visual") return;
-
       KWMP.visual?.visualReselectTick?.();
     }, CFG.visualReselectMs);
 
@@ -79,10 +84,20 @@
     KWMP.overlay?.updateOverlayStatus?.();
   }
 
+  // ✅ Solo crea/actualiza UI cuando visible=true
   function setUIVisible(visible) {
-    // pill siempre visible
+    if (!visible) {
+      // Ocultar todo (si existe) + cerrar panel
+      KWMP.overlay?.setPanelOpen?.(false);
+      KWMP.overlay?.setOverlayVisible?.(false); // si existe helper
+      return;
+    }
+
+    // Crear overlay SOLO cuando ON
     KWMP.overlay?.ensureOverlay?.();
-    if (!visible) KWMP.overlay?.setPanelOpen?.(false);
+    KWMP.overlay?.setOverlayVisible?.(true); // si existe helper
+
+    KWMP.overlay?.setPanelOpen?.(false); // panel cerrado por defecto
     KWMP.overlay?.updateOverlayTracksList?.();
     KWMP.overlay?.updateOverlayStatus?.();
   }
@@ -166,40 +181,41 @@
     const label = platformLabel(getPlatform());
 
     if (S.extensionActiva) {
+      KWMP.log?.("Toggle ON", { platform: getPlatform() });
+
+      // ✅ recién ahora creamos UI visible
       setUIVisible(true);
-      KWMP.voice.cargarVozES();
+
+      KWMP.voice?.cargarVozES?.();
       KWMP.toast?.notify?.(`🟢 KathWare ON — ${label}`);
+
       startTimers();
       S.effectiveFuente = "visual";
       rehookTick();
     } else {
+      KWMP.log?.("Toggle OFF", { platform: getPlatform() });
+
       KWMP.toast?.notify?.(`🔴 KathWare OFF — ${label}`);
       stopAll();
+
+      // ✅ ocultar UI (sin dejar pill/panel)
       setUIVisible(false);
     }
   }
 
   function init() {
-    // storage (si está)
-    KWMP.storage?.cargarConfigDesdeStorage?.(() => {
+    // ✅ NO crear UI en init
+    const after = () => {
       S.currentVideo = KWMP.video?.getMainVideo?.() || null;
+      KWMP.log?.("content cargado (UI lazy)", { host: location.hostname, platform: getPlatform() });
+      // No overlay, no panel, no live region.
+    };
 
-      // pill siempre visible desde arranque
-      KWMP.overlay?.ensureOverlay?.();
-      KWMP.overlay?.setPanelOpen?.(false);
-      KWMP.overlay?.updateOverlayTracksList?.();
-      KWMP.overlay?.updateOverlayStatus?.();
-
-      KWMP.log("content listo en", location.hostname, "plataforma:", getPlatform(), "Hotkey: Ctrl+Alt+K");
-    }) || (() => {
-      // fallback si no hay storage
-      S.currentVideo = KWMP.video?.getMainVideo?.() || null;
-      KWMP.overlay?.ensureOverlay?.();
-      KWMP.overlay?.setPanelOpen?.(false);
-      KWMP.overlay?.updateOverlayTracksList?.();
-      KWMP.overlay?.updateOverlayStatus?.();
-      KWMP.log("content listo (sin storage) en", location.hostname, "plataforma:", getPlatform(), "Hotkey: Ctrl+Alt+K");
-    })();
+    if (KWMP.storage?.cargarConfigDesdeStorage) {
+      KWMP.storage.cargarConfigDesdeStorage(after);
+    } else {
+      after();
+    }
   }
 
   KWMP.pipeline = {

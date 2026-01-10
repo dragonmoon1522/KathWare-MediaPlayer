@@ -1,54 +1,29 @@
+// ====================================================
+// KathWare Media Player - kwmp.bootstrap.js
+// - Crea window.KWMP (namespace global)
+// - Detecta API (chrome/browser)
+// - Logger -> consola + background (kathLogs) vía runtime.sendMessage
+// - Storage loader (modo/fuente/track/debug/hotkeys)
+// ====================================================
+
 (() => {
-  if (window.KWMP?.loadedAt) return;
+  if (window.KWMP) return;
 
   const api =
     (typeof chrome !== "undefined" && chrome?.runtime) ? chrome :
     (typeof browser !== "undefined" && browser?.runtime) ? browser :
     null;
 
-  window.KWMP = {
+  const KWMP = {
     version: "2.0.0",
-    loadedAt: Date.now(),
     api,
-
     CFG: {
       debug: true,
-
-      pollMsTrack: 250,
-      rehookMs: 1000,
-      pollMsVisual: 450,
-      cooldownMs: 650,
-      burstMs: 450,
-      visualReselectMs: 1200,
-      keepControlsMs: 850,
-
-      seekSmall: 5,
-      seekBig: 10,
-      volStep: 0.05,
-
-      hotkeys: {
-        toggle: { ctrl: true, alt: true,  shift: false, key: "k" },
-        mode:   { ctrl: true, alt: true,  shift: false, key: "l" },
-        panel:  { ctrl: true, alt: true,  shift: false, key: "o" }
-      },
-
-      autoOpenPanelOnSubs: false
+      allowRemoteLogs: true, // logs al background (para popup / issues)
+      // hotkeys se definen en kwmp.hotkeys.js (fallback), y pueden venir del storage
+      hotkeys: null
     },
-
-    // Estado único (acá van TODAS las variables sueltas de tu content.js)
     state: {
-      extensionActiva: false,
-
-      // settings
-      modoNarradorGlobal: "lector",
-      fuenteSubGlobal: "auto",
-      trackIndexGlobal: 0,
-      effectiveFuente: "visual",
-
-      // refs
-      currentVideo: null,
-      currentTrack: null,
-
       // overlay refs
       overlayRoot: null,
       overlayPanel: null,
@@ -63,42 +38,131 @@
       toastEl: null,
       toastTimer: null,
 
-      // live region + voice
-      liveRegion: null,
-      voiceES: null,
+      // settings
+      extensionActiva: false,
+      modoNarradorGlobal: "lector", // "off" | "sintetizador" | "lector"
+      fuenteSubGlobal: "auto",      // "auto" | "track" | "visual"
+      trackIndexGlobal: 0,
+      effectiveFuente: "visual",
 
-      // timers
+      // voice/live region
+      voiceES: null,
+      liveRegion: null,
+
+      // engine refs
+      currentVideo: null,
+      currentTrack: null,
+
+      // timers/observers
       pollTimerTrack: null,
       rehookTimer: null,
       pollTimerVisual: null,
       visualReselectTimer: null,
       keepControlsTimer: null,
 
-      // visual observer
       visualObserver: null,
       visualObserverActive: false,
+
+      // visual node/sel
       visualNode: null,
       visualSelectors: null,
 
-      // dedupe read
+      // flow observers
+      flowMenuObserver: null,
+      flowMenusProcessed: new WeakSet(),
+
+      // dedupe lectura
       lastEmitText: "",
       lastEmitAt: 0,
+
+      // per-source change detection
       lastTrackSeen: "",
       lastVisualSeen: "",
 
-      // flow a11y
-      flowMenuObserver: null,
-      flowMenusProcessed: new WeakSet(),
+      // flow labeling signature
       lastFlowControlsSig: "",
       lastFlowLabeledCount: 0,
 
-      // signature
+      // rehook signature
       lastSig: ""
     }
   };
 
-  // Logger común
-  window.KWMP.log = (...a) => window.KWMP.CFG.debug && console.log("[KathWare]", ...a);
+  window.KWMP = KWMP;
 
-  window.KWMP.log("bootstrap listo", location.hostname);
+  // ---------------- Logger ----------------
+  const safeStringify = (x) => {
+    try {
+      if (typeof x === "string") return x;
+      return JSON.stringify(x);
+    } catch {
+      try { return String(x); } catch { return "[unstringifiable]"; }
+    }
+  };
+
+  const toMsg = (arr) => arr.map(safeStringify).join(" ");
+
+  KWMP.emitLog = (level, payload = {}) => {
+    try {
+      if (!KWMP.CFG.allowRemoteLogs) return;
+      if (!KWMP.api?.runtime?.sendMessage) return;
+
+      KWMP.api.runtime.sendMessage({
+        action: "logEvent",
+        payload: {
+          level,
+          version: KWMP.version,
+          url: location.href,
+          platform: KWMP.platforms?.getPlatform?.() || "unknown",
+          ...payload
+        }
+      });
+    } catch (_) {}
+  };
+
+  KWMP.log = (...a) => {
+    if (KWMP.CFG.debug) console.log("[KathWare]", ...a);
+    KWMP.emitLog("log", { msg: toMsg(a) });
+  };
+
+  KWMP.warn = (...a) => {
+    if (KWMP.CFG.debug) console.warn("[KathWare]", ...a);
+    KWMP.emitLog("warn", { msg: toMsg(a) });
+  };
+
+  KWMP.error = (...a) => {
+    console.error("[KathWare]", ...a);
+    KWMP.emitLog("error", { msg: toMsg(a) });
+  };
+
+  // ---------------- Storage loader ----------------
+  // Lo dejamos como módulo KWMP.storage para que lo use pipeline/hotkeys
+  KWMP.storage = {
+    cargarConfigDesdeStorage(cb) {
+      if (!KWMP.api?.storage?.local) return cb && cb();
+
+      KWMP.api.storage.local.get(
+        ["modoNarrador", "fuenteSub", "trackIndex", "debug", "hotkeys"],
+        (data) => {
+          try {
+            if (typeof data?.debug === "boolean") KWMP.CFG.debug = data.debug;
+
+            if (data?.modoNarrador) KWMP.state.modoNarradorGlobal = data.modoNarrador;
+            if (data?.fuenteSub) KWMP.state.fuenteSubGlobal = data.fuenteSub;
+
+            if (typeof data?.trackIndex !== "undefined") {
+              const n = Number(data.trackIndex);
+              KWMP.state.trackIndexGlobal = Number.isFinite(n) ? n : 0;
+            }
+
+            if (data?.hotkeys && typeof data.hotkeys === "object") {
+              KWMP.CFG.hotkeys = { ...(KWMP.CFG.hotkeys || {}), ...data.hotkeys };
+            }
+          } catch (_) {}
+          cb && cb();
+        }
+      );
+    }
+  };
+
 })();

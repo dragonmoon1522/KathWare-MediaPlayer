@@ -5,7 +5,6 @@
   const S = KWMP.state;
 
   function notify(msg) {
-    KWMP.log?.("toast", { msg });
     // Si está ON, empujamos a live region también (como en el monolito)
     try {
       if (S.extensionActiva) KWMP.voice?.pushToLiveRegion?.(msg);
@@ -43,14 +42,5 @@
     } catch {}
   }
 
-  
+  KWMP.toast = { notify };
 })();
-
-function clear() {
-  if (S.toastTimer) clearTimeout(S.toastTimer);
-  if (S.toastEl) {
-    try { S.toastEl.remove(); } catch {}
-    S.toastEl = null;
-  }
-}
-KWMP.toast = { notify, clear };

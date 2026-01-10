@@ -1,16 +1,35 @@
+// ====================================================
+// KathWare Media Player - kwmp.voice.js
+// - Live region + TTS + dedupe + leerTextoAccesible
+// ====================================================
+
 (() => {
   const KWMP = window.KWMP;
   if (!KWMP || KWMP.voice) return;
 
   const S = KWMP.state;
   const CFG = KWMP.CFG;
-  const { normalize } = KWMP.utils;
+
+  // normalize safe (por si utils carga después por error de orden)
+  const normalize = (s) => {
+    const fn = KWMP.utils?.normalize;
+    if (typeof fn === "function") return fn(s);
+    return String(s ?? "")
+      .replace(/\u00A0/g, " ")
+      .replace(/<[^>]+>/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
 
   const listVoicesDebug = () => {
     try {
       if (typeof speechSynthesis === "undefined") return { ok: false, reason: "speechSynthesis undefined" };
       const voces = speechSynthesis.getVoices() || [];
-      return { ok: true, count: voces.length, langs: voces.slice(0, 15).map(v => v.lang).filter(Boolean) };
+      return {
+        ok: true,
+        count: voces.length,
+        langs: voces.slice(0, 15).map(v => v.lang).filter(Boolean)
+      };
     } catch (e) {
       return { ok: false, reason: String(e?.message || e) };
     }
@@ -19,31 +38,36 @@
   const cargarVozES = () => {
     try {
       if (typeof speechSynthesis === "undefined") return;
-      const voces = speechSynthesis.getVoices() || [];
-      S.voiceES =
-        voces.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
-        voces.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
-        null;
+
+      const pick = () => {
+        const voces = speechSynthesis.getVoices() || [];
+        S.voiceES =
+          voces.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
+          voces.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
+          null;
+      };
+
+      pick();
 
       if (!S.voiceES) {
         speechSynthesis.onvoiceschanged = () => {
-          const v2 = speechSynthesis.getVoices() || [];
-          S.voiceES =
-            v2.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
-            v2.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
-            null;
+          try { pick(); } catch {}
         };
       }
-    } catch {}
+    } catch (e) {
+      KWMP.warn?.("cargarVozES error", e);
+    }
   };
 
   const asegurarLiveRegion = () => {
     if (S.liveRegion) return S.liveRegion;
+
     const lr = document.createElement("div");
     lr.id = "kathware-live-region";
     lr.setAttribute("role", "status");
     lr.setAttribute("aria-live", "polite");
     lr.setAttribute("aria-atomic", "true");
+
     Object.assign(lr.style, {
       position: "fixed",
       left: "-9999px",
@@ -52,15 +76,19 @@
       height: "1px",
       overflow: "hidden",
     });
+
     document.documentElement.appendChild(lr);
     S.liveRegion = lr;
     return lr;
   };
 
   const pushToLiveRegion = (texto) => {
+    const t = normalize(texto);
+    if (!t) return;
+
     const lr = asegurarLiveRegion();
     lr.textContent = "";
-    setTimeout(() => { lr.textContent = texto; }, 10);
+    setTimeout(() => { lr.textContent = t; }, 10);
   };
 
   const detenerLectura = () => {
@@ -85,15 +113,30 @@
 
   const speakTTS = (texto) => {
     try {
-      if (typeof speechSynthesis === "undefined") return { ok: false, reason: "speechSynthesis undefined" };
+      const t = normalize(texto);
+      if (!t) return { ok: false, reason: "empty" };
+
+      if (typeof speechSynthesis === "undefined") {
+        return { ok: false, reason: "speechSynthesis undefined" };
+      }
+
       cargarVozES();
-      if (!S.voiceES) return { ok: false, reason: "No encuentro voz ES" };
+      if (!S.voiceES) {
+        return { ok: false, reason: "No encuentro voz ES (getVoices vacío o sin es-*)" };
+      }
 
       speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(texto);
+
+      const u = new SpeechSynthesisUtterance(t);
       u.voice = S.voiceES;
       u.lang = S.voiceES.lang || "es-AR";
+
+      // Debug fino (sale a kathLogs)
+      u.onend = () => KWMP.log?.("TTS end", { lang: u.lang });
+      u.onerror = (ev) => KWMP.warn?.("TTS error", { err: ev?.error || ev, lang: u.lang });
+
       speechSynthesis.speak(u);
+
       return { ok: true, selectedLang: S.voiceES.lang };
     } catch (e) {
       return { ok: false, reason: String(e?.message || e) };
@@ -129,8 +172,8 @@
     if (S.modoNarradorGlobal === "sintetizador") {
       const res = speakTTS(t);
       if (!res.ok) {
-        console.warn("[KathWare] TTS FALLÓ:", res);
-        console.warn("[KathWare] Voices debug:", listVoicesDebug());
+        // ✅ ahora queda en kathLogs (y puede ir al Issue)
+        KWMP.warn?.("TTS FALLÓ", { res, voices: listVoicesDebug() });
       }
     }
   };

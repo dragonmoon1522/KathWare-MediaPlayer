@@ -1,3 +1,7 @@
+// ====================================================
+// KathWare Media Player - kwmp.utils.js
+// ====================================================
+
 (() => {
   const KWMP = window.KWMP;
   if (!KWMP || KWMP.utils) return;
@@ -10,7 +14,11 @@
         .replace(/\s+/g, " ")
         .trim();
     },
-    clamp(n, min, max) { return Math.min(max, Math.max(min, n)); },
+
+    clamp(n, min, max) {
+      return Math.min(max, Math.max(min, n));
+    },
+
     isTyping() {
       const ae = document.activeElement;
       if (!ae) return false;
