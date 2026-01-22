@@ -1,12 +1,12 @@
 // ====================================================
-// KathWare Media Player - kwmp.utils.js
+// KathWare SubtitleReader - kwsr.utils.js
 // ====================================================
 
 (() => {
-  const KWMP = window.KWMP;
-  if (!KWMP || KWMP.utils) return;
+  const KWSR = window.KWSR;
+  if (!KWSR || KWSR.utils) return;
 
-  KWMP.utils = {
+  KWSR.utils = {
     normalize(s) {
       return String(s ?? "")
         .replace(/\u00A0/g, " ")
@@ -28,4 +28,13 @@
       return false;
     }
   };
+
+  /*
+  ===========================
+  Cambios aplicados (resumen)
+  ===========================
+  - Rebrand: KWMP -> KWSR.
+  - Sin cambios funcionales: normalize/clamp/isTyping se mantienen igual.
+  - normalize limpia NBSP, tags HTML y espacios múltiples (dedupe + lectura).
+  */
 })();

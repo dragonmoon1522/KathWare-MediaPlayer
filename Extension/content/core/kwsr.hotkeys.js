@@ -1,20 +1,20 @@
 // ====================================================
-// KathWare Media Player - kwmp.hotkeys.js
+// KathWare SubtitleReader - kwsr.hotkeys.js
 // - Hotkeys in-page (fallback) + mensajes desde background/popup
-// - Entry: KWMP.pipeline.init()
+// - Entry: KWSR.pipeline.init()
 // ====================================================
 
 (() => {
-  const KWMP = window.KWMP;
-  if (!KWMP || KWMP.hotkeys) return;
+  const KWSR = window.KWSR;
+  if (!KWSR || KWSR.hotkeys) return;
 
-  const S = KWMP.state;
-  const CFG = KWMP.CFG;
+  const S = KWSR.state;
+  const CFG = KWSR.CFG;
 
   // ✅ Fallback igual que commands: Alt+Shift+K
   const DEFAULT_HOTKEYS = {
     toggle: { ctrl: false, alt: true,  shift: true,  key: "k" }, // Alt+Shift+K
-    mode:   { ctrl: true,  alt: true,  shift: false, key: "l" }, // Ctrl+Alt+L (te lo dejo como estaba)
+    mode:   { ctrl: true,  alt: true,  shift: false, key: "l" }, // Ctrl+Alt+L
     panel:  { ctrl: true,  alt: true,  shift: false, key: "o" }, // Ctrl+Alt+O
   };
 
@@ -38,14 +38,16 @@
   }
 
   document.addEventListener("keydown", (e) => {
+    // Toggle extensión
     if (matchHotkey(e, CFG.hotkeys.toggle)) {
       e.preventDefault();
       e.stopPropagation();
-      KWMP.log?.("Hotkey toggle (fallback)", {});
-      KWMP.pipeline?.toggleExtension?.();
+      KWSR.log?.("Hotkey toggle (fallback)", {});
+      KWSR.pipeline?.toggleExtension?.();
       return;
     }
 
+    // Cycle modo narrador
     if (matchHotkey(e, CFG.hotkeys.mode)) {
       e.preventDefault();
       e.stopPropagation();
@@ -54,15 +56,16 @@
       const i = order.indexOf(S.modoNarradorGlobal);
       S.modoNarradorGlobal = order[(i + 1) % order.length];
 
-      KWMP.api?.storage?.local?.set?.({ modoNarrador: S.modoNarradorGlobal });
+      KWSR.api?.storage?.local?.set?.({ modoNarrador: S.modoNarradorGlobal });
 
-      KWMP.toast?.notify?.(`Modo: ${S.modoNarradorGlobal}`);
-      if (S.modoNarradorGlobal === "off") KWMP.voice?.detenerLectura?.();
-      KWMP.overlay?.updateOverlayStatus?.();
-      KWMP.log?.("Hotkey mode cycle", { modo: S.modoNarradorGlobal });
+      KWSR.toast?.notify?.(`Modo: ${S.modoNarradorGlobal}`);
+      if (S.modoNarradorGlobal === "off") KWSR.voice?.detenerLectura?.();
+      KWSR.overlay?.updateOverlayStatus?.();
+      KWSR.log?.("Hotkey mode cycle", { modo: S.modoNarradorGlobal });
       return;
     }
 
+    // Toggle panel
     if (matchHotkey(e, CFG.hotkeys.panel)) {
       // Si está OFF, no creamos UI. Panel solo si ON.
       if (!S.extensionActiva) return;
@@ -70,71 +73,84 @@
       e.preventDefault();
       e.stopPropagation();
 
-      KWMP.overlay?.ensureOverlay?.();
+      KWSR.overlay?.ensureOverlay?.();
       const open = S.overlayPanel && S.overlayPanel.style.display !== "none";
-      KWMP.overlay?.setPanelOpen?.(!open);
+      KWSR.overlay?.setPanelOpen?.(!open);
 
-      KWMP.log?.("Hotkey panel toggle", { open: !open });
+      KWSR.log?.("Hotkey panel toggle", { open: !open });
       return;
     }
 
-    if (KWMP.overlay?.handlePlayerHotkeys?.(e)) return;
+    // Hotkeys del player (si aplica)
+    if (KWSR.overlay?.handlePlayerHotkeys?.(e)) return;
   }, true);
 
   // Mensajes desde background/popup
-  const api = KWMP.api;
+  const api = KWSR.api;
   if (api?.runtime?.onMessage) {
     api.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
-        if (message?.action === "toggleNarrator") {
-          KWMP.log?.("Msg toggleNarrator", { from: "background" });
-          KWMP.pipeline?.toggleExtension?.();
+        // ✅ Background command: toggle (renombrado a “toggleExtension”)
+        if (message?.action === "toggleExtension") {
+          KWSR.log?.("Msg toggleExtension", { from: "background" });
+          KWSR.pipeline?.toggleExtension?.();
           sendResponse?.({ status: "ok" });
           return false;
         }
 
-        if (message?.action === "updateSettings") {
-          KWMP.log?.("Msg updateSettings", { from: "popup" });
+        // ✅ Compat: si quedó algún background viejo usando toggleNarrator
+        if (message?.action === "toggleNarrator") {
+          KWSR.warn?.("Msg toggleNarrator (deprecated)", { from: "background" });
+          KWSR.pipeline?.toggleExtension?.();
+          sendResponse?.({ status: "ok" });
+          return false;
+        }
 
-          if (KWMP.storage?.cargarConfigDesdeStorage) {
-            KWMP.storage.cargarConfigDesdeStorage(() => {
+        // Popup: update settings
+        if (message?.action === "updateSettings") {
+          KWSR.log?.("Msg updateSettings", { from: "popup" });
+
+          if (KWSR.storage?.cargarConfigDesdeStorage) {
+            KWSR.storage.cargarConfigDesdeStorage(() => {
               // Si está OFF no creamos UI, solo guardamos state.
               if (S.extensionActiva) {
-                KWMP.overlay?.updateOverlayStatus?.();
-                KWMP.overlay?.updateOverlayTracksList?.();
-                KWMP.pipeline?.restartPipeline?.();
+                KWSR.overlay?.updateOverlayStatus?.();
+                KWSR.overlay?.updateOverlayTracksList?.();
+                KWSR.pipeline?.restartPipeline?.();
               }
               sendResponse?.({ status: "ok" });
             });
-            return true;
+            return true; // async
           }
 
           if (S.extensionActiva) {
-            KWMP.overlay?.updateOverlayStatus?.();
-            KWMP.overlay?.updateOverlayTracksList?.();
-            KWMP.pipeline?.restartPipeline?.();
+            KWSR.overlay?.updateOverlayStatus?.();
+            KWSR.overlay?.updateOverlayTracksList?.();
+            KWSR.pipeline?.restartPipeline?.();
           }
           sendResponse?.({ status: "ok" });
           return false;
         }
 
+        // Popup: set track
         if (message?.action === "setTrack") {
           const idx = Number(message.index);
-          KWMP.log?.("Msg setTrack", { index: idx });
+          KWSR.log?.("Msg setTrack", { index: idx });
 
           if (Number.isFinite(idx)) {
             S.trackIndexGlobal = idx;
             api?.storage?.local?.set?.({ trackIndex: S.trackIndexGlobal });
-            if (S.extensionActiva) KWMP.pipeline?.restartPipeline?.();
-            KWMP.overlay?.updateOverlayTracksList?.();
-            KWMP.overlay?.updateOverlayStatus?.();
+            if (S.extensionActiva) KWSR.pipeline?.restartPipeline?.();
+            KWSR.overlay?.updateOverlayTracksList?.();
+            KWSR.overlay?.updateOverlayStatus?.();
           }
           sendResponse?.({ status: "ok" });
           return false;
         }
 
+        // Popup: list tracks
         if (message?.type === "getTracks") {
-          const v = KWMP.video?.getMainVideo?.() || null;
+          const v = KWSR.video?.getMainVideo?.() || null;
           const tracks = v?.textTracks
             ? Array.from(v.textTracks).map(t => ({
                 label: t.label || t.language || "Pista",
@@ -145,14 +161,15 @@
           return false;
         }
 
+        // Popup: toggle overlay panel (si lo necesitás)
         if (message?.action === "toggleOverlayPanel") {
           if (!S.extensionActiva) {
             sendResponse?.({ status: "off" });
             return false;
           }
-          KWMP.overlay?.ensureOverlay?.();
+          KWSR.overlay?.ensureOverlay?.();
           const open = S.overlayPanel && S.overlayPanel.style.display !== "none";
-          KWMP.overlay?.setPanelOpen?.(!open);
+          KWSR.overlay?.setPanelOpen?.(!open);
           sendResponse?.({ status: "ok" });
           return false;
         }
@@ -160,15 +177,29 @@
         sendResponse?.({ status: "noop" });
         return false;
       } catch (e) {
-        KWMP.error?.("onMessage error", e);
+        KWSR.error?.("onMessage error", e);
         sendResponse?.({ status: "error", error: String(e?.message || e) });
         return false;
       }
     });
   }
 
-  KWMP.hotkeys = { matchHotkey };
+  KWSR.hotkeys = { matchHotkey };
 
   // ✅ entrypoint final (no UI)
-  KWMP.pipeline?.init?.();
+  KWSR.pipeline?.init?.();
+
+  /*
+  ===========================
+  Cambios aplicados (resumen)
+  ===========================
+  - Rebrand: KWMP -> KWSR.
+  - Hotkey fallback alineada con commands: Alt+Shift+K (toggle).
+  - Se cambió el mensaje esperado desde background a:
+      { action: "toggleExtension" }
+    y se dejó compat con { action: "toggleNarrator" } por si quedó algo viejo.
+  - updateSettings / setTrack / getTracks quedan iguales, pero con KWSR.*
+  - Panel hotkey: solo funciona si la extensión está ON (no crea UI si está OFF).
+  - Entrypoint: se mantiene KWSR.pipeline.init() al final, sin crear UI.
+  */
 })();

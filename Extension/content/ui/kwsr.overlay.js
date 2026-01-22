@@ -1,18 +1,18 @@
 // ====================================================
-// KathWare Media Player - kwmp.overlay.js
+// KathWare SubtitleReader - kwsr.overlay.js
 // - UI (pill + panel) + controles del player + hotkeys player
 // - Importante: se crea SOLO cuando ensureOverlay() es llamado (lazy)
 // ====================================================
 
 (() => {
-  const KWMP = window.KWMP;
-  if (!KWMP || KWMP.overlay) return;
+  const KWSR = window.KWSR;
+  if (!KWSR || KWSR.overlay) return;
 
-  const S = KWMP.state;
-  const CFG = KWMP.CFG;
+  const S = KWSR.state;
+  const CFG = KWSR.CFG;
 
-  const clamp = KWMP.utils?.clamp || ((n, min, max) => Math.min(max, Math.max(min, n)));
-  const isTyping = KWMP.utils?.isTyping || (() => {
+  const clamp = KWSR.utils?.clamp || ((n, min, max) => Math.min(max, Math.max(min, n)));
+  const isTyping = KWSR.utils?.isTyping || (() => {
     const ae = document.activeElement;
     if (!ae) return false;
     const tag = (ae.tagName || "").toUpperCase();
@@ -71,7 +71,7 @@
     `;
 
     const fuenteSelect = document.createElement("select");
-    fuenteSelect.setAttribute("aria-label", "Fuente de subtítulos");
+    fuenteSelect.setAttribute("aria-label", "Fuente de texto");
     fuenteSelect.innerHTML = `
       <option value="auto">Auto</option>
       <option value="track">TRACK</option>
@@ -86,7 +86,12 @@
     trackSelect.innerHTML = `<option value="0">Pista 1</option>`;
 
     const controlsRow = document.createElement("div");
-    Object.assign(controlsRow.style, { display: "flex", flexWrap: "wrap", gap: "8px", marginTop: "10px" });
+    Object.assign(controlsRow.style, {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "8px",
+      marginTop: "10px"
+    });
 
     const mkBtn = (label, onClick, aria) => {
       const b = document.createElement("button");
@@ -107,9 +112,9 @@
     const btnPause = mkBtn("⏸️", () => S.currentVideo?.pause?.(), "Pausar");
     const btnBack  = mkBtn("⏪", () => seekBy(-CFG.seekBig), "Atrasar 10 segundos");
     const btnFwd   = mkBtn("⏩", () => seekBy(+CFG.seekBig), "Adelantar 10 segundos");
-    const btnMute  = mkBtn("M",  () => toggleMute(), "Silenciar / Activar sonido");
-    const btnCC    = mkBtn("C",  () => toggleCaptions(), "Subtítulos");
-    const btnFull  = mkBtn("⛶", () => requestFull(), "Pantalla completa");
+    const btnMute  = mkBtn("M",   () => toggleMute(), "Silenciar / Activar sonido");
+    const btnCC    = mkBtn("C",   () => toggleCaptions(), "Subtítulos");
+    const btnFull  = mkBtn("⛶",  () => requestFull(), "Pantalla completa");
     const btnClose = mkBtn("Cerrar", () => setPanelOpen(false), "Cerrar panel");
 
     controlsRow.append(btnPlay, btnPause, btnBack, btnFwd, btnMute, btnCC, btnFull, btnClose);
@@ -118,7 +123,7 @@
 
     const pill = document.createElement("button");
     pill.type = "button";
-    pill.setAttribute("aria-label", "Abrir KathWare Media Player");
+    pill.setAttribute("aria-label", "Abrir KathWare SubtitleReader");
     pill.textContent = "KW";
     Object.assign(pill.style, {
       width: "46px",
@@ -153,15 +158,15 @@
     // listeners
     modoSelect.addEventListener("change", () => {
       S.modoNarradorGlobal = modoSelect.value;
-      KWMP.api?.storage?.local?.set?.({ modoNarrador: S.modoNarradorGlobal });
-      if (S.modoNarradorGlobal === "off") KWMP.voice?.detenerLectura?.();
+      KWSR.api?.storage?.local?.set?.({ modoNarrador: S.modoNarradorGlobal });
+      if (S.modoNarradorGlobal === "off") KWSR.voice?.detenerLectura?.();
       updateOverlayStatus();
     });
 
     fuenteSelect.addEventListener("change", () => {
       S.fuenteSubGlobal = fuenteSelect.value;
-      KWMP.api?.storage?.local?.set?.({ fuenteSub: S.fuenteSubGlobal });
-      if (S.extensionActiva) KWMP.pipeline?.restartPipeline?.();
+      KWSR.api?.storage?.local?.set?.({ fuenteSub: S.fuenteSubGlobal });
+      if (S.extensionActiva) KWSR.pipeline?.restartPipeline?.();
       updateOverlayStatus();
     });
 
@@ -169,26 +174,25 @@
       const idx = Number(trackSelect.value);
       if (Number.isFinite(idx)) {
         S.trackIndexGlobal = idx;
-        KWMP.api?.storage?.local?.set?.({ trackIndex: S.trackIndexGlobal });
-        if (S.extensionActiva) KWMP.pipeline?.restartPipeline?.();
+        KWSR.api?.storage?.local?.set?.({ trackIndex: S.trackIndexGlobal });
+        if (S.extensionActiva) KWSR.pipeline?.restartPipeline?.();
         updateOverlayStatus();
       }
     });
   }
 
-  // ✅ Nuevo: mostrar/ocultar TODO el overlay (pill + panel)
+  // ✅ mostrar/ocultar TODO el overlay (pill + panel)
   function setOverlayVisible(visible) {
     if (!S.overlayRoot) return;
     S.overlayRoot.style.display = visible ? "block" : "none";
     if (!visible) {
-      // al ocultar, cerramos panel para evitar estados raros
       try { S.overlayPanel.style.display = "none"; } catch {}
     }
   }
 
   function setPanelOpen(open) {
     ensureOverlay();
-    // Si abrimos panel, aseguramos que el root esté visible
+    // si abrimos panel, aseguramos que el root esté visible
     setOverlayVisible(true);
     S.overlayPanel.style.display = open ? "block" : "none";
   }
@@ -237,7 +241,7 @@
   function updateOverlayStatus() {
     if (!S.overlayRoot) return;
 
-    const label = KWMP.platforms.platformLabel(KWMP.platforms.getPlatform());
+    const label = KWSR.platforms?.platformLabel?.(KWSR.platforms?.getPlatform?.() || "generic") || "Sitio";
     const enabled = S.extensionActiva ? "🟢 ON" : "🔴 OFF";
 
     const modeEmoji =
@@ -275,17 +279,21 @@
   function requestFull() {
     const v = S.currentVideo;
     if (!v) return;
+
+    // Aviso útil: fullscreen puede cortar el flujo accesible en varios sitios
+    KWSR.toast?.notify?.("⚠️ En pantalla completa la lectura automática puede fallar.");
+
     try { v.requestFullscreen?.(); } catch {}
   }
 
   function toggleCaptions() {
     const v = S.currentVideo;
     if (!v?.textTracks?.length) {
-      KWMP.toast?.notify?.("⚠️ No hay pistas de subtítulos para alternar.");
+      KWSR.toast?.notify?.("⚠️ No hay pistas de subtítulos para alternar.");
       return;
     }
 
-    const t = S.currentTrack || KWMP.track?.pickBestTrack?.(v);
+    const t = S.currentTrack || KWSR.track?.pickBestTrack?.(v);
     if (!t) return;
 
     try {
@@ -294,7 +302,7 @@
       else t.mode = "hidden";
       S.currentTrack = t;
       updateOverlayStatus();
-      KWMP.toast?.notify?.(`CC: ${t.mode === "showing" ? "ON" : "OFF"}`);
+      KWSR.toast?.notify?.(`CC: ${t.mode === "showing" ? "ON" : "OFF"}`);
     } catch {}
   }
 
@@ -304,7 +312,14 @@
     if (e.ctrlKey || e.altKey || e.metaKey) return false;
 
     const panelOpen = S.overlayPanel && S.overlayPanel.style.display !== "none";
-    if (!panelOpen && KWMP.platforms.getPlatform() !== "flow") return false;
+
+    // Por defecto, respetamos el comportamiento anterior:
+    // hotkeys del player solo si el panel está abierto,
+    // excepto plataformas con controles difíciles (antes Flow).
+    const p = KWSR.platforms?.getPlatform?.() || "generic";
+    const caps = KWSR.platforms?.platformCapabilities?.(p) || { keepAlive: false, nonAccessibleFixes: false };
+
+    if (!panelOpen && !caps.nonAccessibleFixes) return false;
 
     const key = (e.key || "").toLowerCase();
 
@@ -342,7 +357,7 @@
     return false;
   }
 
-  KWMP.overlay = {
+  KWSR.overlay = {
     ensureOverlay,
     setOverlayVisible,
     setPanelOpen,
@@ -352,4 +367,17 @@
     updateOverlayStatus,
     handlePlayerHotkeys
   };
+
+  /*
+  ===========================
+  Cambios aplicados (resumen)
+  ===========================
+  - Rebrand: KWMP -> KWSR.
+  - UI: textos y aria-labels actualizados a "KathWare SubtitleReader".
+  - Fuente: el selector de fuente ahora incluye "auto" (Auto / TRACK / VISUAL), alineado con pipeline.
+  - Accesibilidad: al pedir fullscreen se avisa con toast que la lectura puede fallar en pantalla completa.
+  - Hotkeys del player: se mantiene el comportamiento original (solo con panel abierto),
+    pero se habilita también en plataformas marcadas como nonAccessibleFixes=true en platformCapabilities().
+  - updateOverlayStatus usa platformLabel/getPlatform/capabilities de KWSR.platforms (si existe).
+  */
 })();

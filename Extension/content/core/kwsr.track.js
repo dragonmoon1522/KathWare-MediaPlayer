@@ -1,9 +1,14 @@
-(() => {
-  const KWMP = window.KWMP;
-  if (!KWMP || KWMP.track) return;
+// ====================================================
+// KathWare SubtitleReader - kwsr.track.js
+// - TRACK engine: lee video.textTracks (oncuechange + polling fallback)
+// ====================================================
 
-  const S = KWMP.state;
-  const { normalize, clamp } = KWMP.utils;
+(() => {
+  const KWSR = window.KWSR;
+  if (!KWSR || KWSR.track) return;
+
+  const S = KWSR.state;
+  const { normalize, clamp } = KWSR.utils;
 
   function readActiveCues(track) {
     try {
@@ -17,15 +22,20 @@
 
   function trackSeemsUsable(track) {
     if (!track) return false;
+
+    // Intento: habilitar lectura sin “mostrar” visualmente (hidden)
     try { if (track.mode === "disabled") track.mode = "hidden"; } catch {}
+
     try {
       const txt = readActiveCues(track);
       if (txt) return true;
+
       const len = track.cues ? track.cues.length : 0;
       if (len > 0) return true;
     } catch {
       return false;
     }
+
     return false;
   }
 
@@ -40,6 +50,7 @@
     if (!list.length) return null;
 
     const idx = clamp(S.trackIndexGlobal, 0, list.length - 1);
+
     return (
       list[idx] ||
       list.find(t => t.mode === "showing") ||
@@ -52,11 +63,12 @@
 
   function attachTrack(track) {
     if (!track) return;
+
     try { if (track.mode === "disabled") track.mode = "hidden"; } catch {}
     try { track.oncuechange = null; } catch {}
 
     track.oncuechange = () => {
-      if (!KWMP.voice.shouldReadNow()) return;
+      if (!KWSR.voice.shouldReadNow()) return;
       if (S.effectiveFuente !== "track") return;
 
       const txt = readActiveCues(track);
@@ -65,13 +77,14 @@
       if (txt === S.lastTrackSeen) return;
       S.lastTrackSeen = txt;
 
-      KWMP.voice.leerTextoAccesible(txt);
+      KWSR.voice.leerTextoAccesible(txt);
     };
 
+    // Primera lectura inmediata (si ya hay cue activo)
     const initial = readActiveCues(track);
     if (initial && initial !== S.lastTrackSeen) {
       S.lastTrackSeen = initial;
-      KWMP.voice.leerTextoAccesible(initial);
+      KWSR.voice.leerTextoAccesible(initial);
     }
   }
 
@@ -79,35 +92,36 @@
     const v = S.currentVideo;
     if (!v?.textTracks || !v.textTracks.length) {
       S.currentTrack = null;
-      KWMP.overlay?.updateOverlayStatus?.();
+      KWSR.overlay?.updateOverlayStatus?.();
       return false;
     }
 
     const best = pickBestTrack(v);
     if (!best) {
       S.currentTrack = null;
-      KWMP.overlay?.updateOverlayStatus?.();
+      KWSR.overlay?.updateOverlayStatus?.();
       return false;
     }
 
     if (!trackSeemsUsable(best)) {
       S.currentTrack = null;
-      KWMP.overlay?.updateOverlayStatus?.();
+      KWSR.overlay?.updateOverlayStatus?.();
       return false;
     }
 
     if (best !== S.currentTrack) {
       S.currentTrack = best;
       attachTrack(best);
-      KWMP.overlay?.updateOverlayTracksList?.();
-      KWMP.overlay?.updateOverlayStatus?.();
-      KWMP.log("TRACK activo:", KWMP.overlay?.describeTrack?.(best) || best);
+      KWSR.overlay?.updateOverlayTracksList?.();
+      KWSR.overlay?.updateOverlayStatus?.();
+      KWSR.log?.("TRACK activo:", KWSR.overlay?.describeTrack?.(best) || best);
     }
+
     return true;
   }
 
   function pollTrackTick() {
-    if (!KWMP.voice.shouldReadNow()) return;
+    if (!KWSR.voice.shouldReadNow()) return;
     if (S.effectiveFuente !== "track") return;
     if (!S.currentTrack) return;
 
@@ -117,10 +131,10 @@
     if (txt === S.lastTrackSeen) return;
     S.lastTrackSeen = txt;
 
-    KWMP.voice.leerTextoAccesible(txt);
+    KWSR.voice.leerTextoAccesible(txt);
   }
 
-  KWMP.track = {
+  KWSR.track = {
     readActiveCues,
     trackSeemsUsable,
     videoHasUsableTracks,
@@ -129,4 +143,18 @@
     startTrack,
     pollTrackTick
   };
+
+  /*
+  ===========================
+  Cambios aplicados (resumen)
+  ===========================
+  - Rebrand: KWMP -> KWSR.
+  - Se mantiene lógica TRACK (activeCues + oncuechange + poll fallback).
+  - “Usable”: fuerza track.mode a "hidden" si estaba "disabled" para poder leer sin render.
+  - Respeta gating:
+      - solo lee si voice.shouldReadNow()
+      - solo si effectiveFuente === "track"
+      - dedupe por S.lastTrackSeen
+  - Logs/overlay updates quedan iguales, ahora con KWSR.*
+  */
 })();

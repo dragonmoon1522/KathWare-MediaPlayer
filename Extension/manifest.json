@@ -38,7 +38,7 @@
         "content/ui/kwsr.overlay.js",
 
         "content/adapters/kwsr.keepAlive.js",
-        "content/adapters/kwsr.nonAccessibleFixes.platforms.js",
+        "content/adapters/kwsr.nonAccessible.platforms.js",
 
         "content/core/kwsr.pipeline.js",
         "content/core/kwsr.hotkeys.js"

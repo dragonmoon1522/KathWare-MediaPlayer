@@ -1,9 +1,15 @@
-(() => {
-  const KWMP = window.KWMP;
-  if (!KWMP || KWMP.visual) return;
+// ====================================================
+// KathWare SubtitleReader - kwsr.visual.js
+// - VISUAL engine: detecta texto “en pantalla” vía selectores por plataforma
+// - MutationObserver + polling fallback + reselection
+// ====================================================
 
-  const S = KWMP.state;
-  const { normalize } = KWMP.utils;
+(() => {
+  const KWSR = window.KWSR;
+  if (!KWSR || KWSR.visual) return;
+
+  const S = KWSR.state;
+  const { normalize } = KWSR.utils;
 
   function looksLikeNoise(node, text) {
     const t = normalize(text);
@@ -28,10 +34,11 @@
     }
     if (!nodes.length) return null;
 
-    // Flow Theoplayer TTML preferido
+    // Preferencia histórica: Theoplayer TTML (Flow)
     const theoTTML = nodes.find(n => (n.className || "").toString().includes("theoplayer-ttml-texttrack-"));
     if (theoTTML) return theoTTML;
 
+    // Elegimos desde el final (a menudo el último coincide con el “overlay activo”)
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
       const t = normalize(n?.textContent);
@@ -47,8 +54,8 @@
   }
 
   function startVisual() {
-    const p = KWMP.platforms.getPlatform();
-    S.visualSelectors = KWMP.platforms.platformSelectors(p);
+    const p = KWSR.platforms?.getPlatform?.() || "generic";
+    S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
 
     const next = pickBestVisualNode();
     if (next) S.visualNode = next;
@@ -58,7 +65,7 @@
     if (S.visualNode) {
       try {
         S.visualObserver = new MutationObserver(() => {
-          if (!KWMP.voice.shouldReadNow()) return;
+          if (!KWSR.voice.shouldReadNow()) return;
           if (S.effectiveFuente !== "visual") return;
 
           const t = normalize(S.visualNode?.textContent);
@@ -68,7 +75,7 @@
           if (t === S.lastVisualSeen) return;
           S.lastVisualSeen = t;
 
-          KWMP.voice.leerTextoAccesible(t);
+          KWSR.voice.leerTextoAccesible(t);
         });
 
         S.visualObserver.observe(S.visualNode, { childList: true, subtree: true, characterData: true });
@@ -78,14 +85,17 @@
       }
     }
 
-    KWMP.overlay?.updateOverlayStatus?.();
+    KWSR.overlay?.updateOverlayStatus?.();
   }
 
   function pollVisualTick() {
-    if (!KWMP.voice.shouldReadNow()) return;
+    if (!KWSR.voice.shouldReadNow()) return;
     if (S.effectiveFuente !== "visual") return;
 
-    if (!S.visualSelectors) S.visualSelectors = KWMP.platforms.platformSelectors(KWMP.platforms.getPlatform());
+    if (!S.visualSelectors) {
+      const p = KWSR.platforms?.getPlatform?.() || "generic";
+      S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
+    }
 
     if (!S.visualNode) {
       S.visualNode = pickBestVisualNode();
@@ -93,6 +103,7 @@
       return;
     }
 
+    // Si observer está activo, no necesitamos poll
     if (S.visualObserverActive) return;
 
     const t = normalize(S.visualNode.textContent);
@@ -102,20 +113,25 @@
     if (t === S.lastVisualSeen) return;
     S.lastVisualSeen = t;
 
-    KWMP.voice.leerTextoAccesible(t);
+    KWSR.voice.leerTextoAccesible(t);
   }
 
   function visualReselectTick() {
-    if (!S.visualSelectors) S.visualSelectors = KWMP.platforms.platformSelectors(KWMP.platforms.getPlatform());
+    if (!S.visualSelectors) {
+      const p = KWSR.platforms?.getPlatform?.() || "generic";
+      S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
+    }
+
     const prev = S.visualNode;
     const next = pickBestVisualNode() || prev;
+
     if (next && next !== prev) {
       S.visualNode = next;
       startVisual();
     }
   }
 
-  KWMP.visual = {
+  KWSR.visual = {
     looksLikeNoise,
     pickBestVisualNode,
     stopVisualObserver,
@@ -123,4 +139,21 @@
     pollVisualTick,
     visualReselectTick
   };
+
+  /*
+  ===========================
+  Cambios aplicados (resumen)
+  ===========================
+  - Rebrand: KWMP -> KWSR.
+  - Sigue el mismo enfoque:
+      - selectors por plataforma (KWSR.platforms.platformSelectors)
+      - elegir “mejor nodo” evitando ruido
+      - MutationObserver + polling fallback + reselection periódica
+  - Se mantiene preferencia por Theoplayer TTML cuando existe (caso Flow),
+    pero el módulo ya es “agnóstico” (solo es una heurística).
+  - Respeta gating:
+      - voice.shouldReadNow()
+      - effectiveFuente === "visual"
+      - dedupe por S.lastVisualSeen
+  */
 })();

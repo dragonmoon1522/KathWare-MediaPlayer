@@ -1,18 +1,18 @@
 // ====================================================
-// KathWare Media Player - kwmp.voice.js
+// KathWare SubtitleReader - kwsr.voice.js
 // - Live region + TTS + dedupe + leerTextoAccesible
 // ====================================================
 
 (() => {
-  const KWMP = window.KWMP;
-  if (!KWMP || KWMP.voice) return;
+  const KWSR = window.KWSR;
+  if (!KWSR || KWSR.voice) return;
 
-  const S = KWMP.state;
-  const CFG = KWMP.CFG;
+  const S = KWSR.state;
+  const CFG = KWSR.CFG;
 
   // normalize safe (por si utils carga después por error de orden)
   const normalize = (s) => {
-    const fn = KWMP.utils?.normalize;
+    const fn = KWSR.utils?.normalize;
     if (typeof fn === "function") return fn(s);
     return String(s ?? "")
       .replace(/\u00A0/g, " ")
@@ -55,7 +55,7 @@
         };
       }
     } catch (e) {
-      KWMP.warn?.("cargarVozES error", e);
+      KWSR.warn?.("cargarVozES error", e);
     }
   };
 
@@ -104,8 +104,11 @@
   const shouldEmit = (t) => {
     const now = Date.now();
     if (!t) return false;
+
+    // Bloqueo anti-spam: misma frase muy seguida
     if (t === S.lastEmitText && (now - S.lastEmitAt) < CFG.burstMs) return false;
     if (t === S.lastEmitText && (now - S.lastEmitAt) < CFG.cooldownMs) return false;
+
     S.lastEmitText = t;
     S.lastEmitAt = now;
     return true;
@@ -132,8 +135,8 @@
       u.lang = S.voiceES.lang || "es-AR";
 
       // Debug fino (sale a kathLogs)
-      u.onend = () => KWMP.log?.("TTS end", { lang: u.lang });
-      u.onerror = (ev) => KWMP.warn?.("TTS error", { err: ev?.error || ev, lang: u.lang });
+      u.onend = () => KWSR.log?.("TTS end", { lang: u.lang });
+      u.onerror = (ev) => KWSR.warn?.("TTS error", { err: ev?.error || ev, lang: u.lang });
 
       speechSynthesis.speak(u);
 
@@ -145,10 +148,14 @@
 
   const shouldReadNow = () => {
     if (!S.extensionActiva) return false;
+
+    // Si no tenemos video, igual permitimos lectura (casos: captions/transcript fuera de <video>)
     if (!S.currentVideo) return true;
+
     try {
       if (S.currentVideo.paused || S.currentVideo.ended) return false;
     } catch {}
+
     return true;
   };
 
@@ -158,7 +165,7 @@
     if (!shouldEmit(t)) return;
 
     // overlay text (si existe)
-    KWMP.overlay?.updateOverlayText?.(t);
+    KWSR.overlay?.updateOverlayText?.(t);
 
     if (!S.extensionActiva) return;
     if (S.modoNarradorGlobal === "off") return;
@@ -172,13 +179,13 @@
     if (S.modoNarradorGlobal === "sintetizador") {
       const res = speakTTS(t);
       if (!res.ok) {
-        // ✅ ahora queda en kathLogs (y puede ir al Issue)
-        KWMP.warn?.("TTS FALLÓ", { res, voices: listVoicesDebug() });
+        // ✅ queda en kathLogs (y puede ir al Issue)
+        KWSR.warn?.("TTS FALLÓ", { res, voices: listVoicesDebug() });
       }
     }
   };
 
-  KWMP.voice = {
+  KWSR.voice = {
     listVoicesDebug,
     cargarVozES,
     asegurarLiveRegion,
@@ -188,4 +195,26 @@
     shouldReadNow,
     leerTextoAccesible
   };
+
+  /*
+  ===========================
+  Cambios aplicados (resumen)
+  ===========================
+  - Rebrand: KWMP -> KWSR.
+  - Se mantiene el modelo “emisor → mensaje → receptor”:
+      - Emisor: track/visual
+      - Mensaje: texto normalizado
+      - Receptor: live region (lector) o TTS (sintetizador)
+  - Dedupe global:
+      - burstMs + cooldownMs en CFG para evitar spam del mismo texto.
+  - shouldReadNow():
+      - Si no hay <video> principal, permite lectura igual (pensando a futuro en captions/transcripts tipo Teams).
+      - Si hay video, no lee cuando está paused/ended.
+  - Live region:
+      - role=status + aria-live=polite + aria-atomic=true
+      - push con “vaciar y setTimeout” para forzar anuncio.
+  - TTS:
+      - elige es-AR si existe; fallback es-*
+      - loggea errores a kathLogs vía warn.
+  */
 })();

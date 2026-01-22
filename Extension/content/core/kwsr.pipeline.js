@@ -1,105 +1,129 @@
 // ====================================================
-// KathWare Media Player - kwmp.pipeline.js
+// KathWare SubtitleReader - kwsr.pipeline.js
 // - Control del pipeline: timers, rehook, toggle, init
 // - Importante: NO crea UI hasta que el usuario active (ON)
+// - Integra adapters:
+//    - KWSR.keepAlive.tick() (controles visibles)
+//    - KWSR.nonAccessiblePlatforms.* (fixes UI no accesible)
 // ====================================================
 
 (() => {
-  const KWMP = window.KWMP;
-  if (!KWMP || KWMP.pipeline) return;
+  const KWSR = window.KWSR;
+  if (!KWSR || KWSR.pipeline) return;
 
-  const S = KWMP.state;
-  const CFG = KWMP.CFG;
+  const S = KWSR.state;
+  const CFG = KWSR.CFG;
 
-  const getPlatform = () => KWMP.platforms.getPlatform();
-  const platformLabel = (p) => KWMP.platforms.platformLabel(p);
+  const getPlatform = () => KWSR.platforms?.getPlatform?.() || "generic";
+  const platformLabel = (p) => KWSR.platforms?.platformLabel?.(p) || "Sitio";
+  const getCaps = (p) => KWSR.platforms?.platformCapabilities?.(p) || {};
 
   function stopTimers() {
     try { clearInterval(S.pollTimerTrack); } catch {}
     try { clearInterval(S.rehookTimer); } catch {}
     try { clearInterval(S.pollTimerVisual); } catch {}
     try { clearInterval(S.visualReselectTimer); } catch {}
-    try { clearInterval(S.keepControlsTimer); } catch {}
-    S.pollTimerTrack = S.rehookTimer = S.pollTimerVisual = S.visualReselectTimer = S.keepControlsTimer = null;
+    try { clearInterval(S.adaptersTimer); } catch {}
+    S.pollTimerTrack = S.rehookTimer = S.pollTimerVisual = S.visualReselectTimer = S.adaptersTimer = null;
   }
 
   function stopAll() {
     stopTimers();
-    KWMP.flowA11y?.stopFlowMenuObserver?.();
 
+    // adapters teardown
+    try { KWSR.nonAccessiblePlatforms?.stopMenuObserver?.(); } catch {}
+
+    // track teardown
     try { if (S.currentTrack) S.currentTrack.oncuechange = null; } catch {}
     S.currentTrack = null;
 
-    KWMP.visual?.stopVisualObserver?.();
+    // visual teardown
+    try { KWSR.visual?.stopVisualObserver?.(); } catch {}
     S.visualNode = null;
     S.visualSelectors = null;
 
-    KWMP.voice?.detenerLectura?.();
+    // voice teardown
+    try { KWSR.voice?.detenerLectura?.(); } catch {}
   }
 
   function startTimers() {
     stopTimers();
 
+    // Rehook: detecta cambios de video/track/selector
     S.rehookTimer = setInterval(() => rehookTick(), CFG.rehookMs);
 
+    // Track polling fallback
     S.pollTimerTrack = setInterval(() => {
-      KWMP.track?.pollTrackTick?.();
+      KWSR.track?.pollTrackTick?.();
     }, CFG.pollMsTrack);
 
+    // Visual polling fallback
     S.pollTimerVisual = setInterval(() => {
-      KWMP.visual?.pollVisualTick?.();
+      KWSR.visual?.pollVisualTick?.();
     }, CFG.pollMsVisual);
 
+    // Visual reselection (si estamos en visual)
     S.visualReselectTimer = setInterval(() => {
       if (!S.extensionActiva) return;
       if (S.effectiveFuente !== "visual") return;
-      KWMP.visual?.visualReselectTick?.();
+      KWSR.visual?.visualReselectTick?.();
     }, CFG.visualReselectMs);
 
-    S.keepControlsTimer = setInterval(() => {
-      KWMP.flowA11y?.keepControlsTick?.();
-    }, CFG.keepControlsMs);
+    // Adapters: keepAlive + nonAccessible ticks (gated por capabilities)
+    S.adaptersTimer = setInterval(() => {
+      // mantén controles visibles en plataformas que lo necesiten
+      KWSR.keepAlive?.tick?.();
 
-    if (getPlatform() === "flow") KWMP.flowA11y?.startFlowMenuObserver?.();
+      // etiquetas dinámicas / menús audio-subs (solo si caps lo pide)
+      KWSR.nonAccessiblePlatforms?.tick?.();
+    }, CFG.adaptersMs);
+
+    // Menús: observer solo si la plataforma declara fixes no accesibles
+    const caps = getCaps(getPlatform());
+    if (caps.nonAccessibleFixes) KWSR.nonAccessiblePlatforms?.startMenuObserver?.();
   }
 
   function restartPipeline() {
+    // track reset
     try { if (S.currentTrack) S.currentTrack.oncuechange = null; } catch {}
     S.currentTrack = null;
 
-    KWMP.visual?.stopVisualObserver?.();
+    // visual reset
+    try { KWSR.visual?.stopVisualObserver?.(); } catch {}
     S.visualNode = null;
     S.visualSelectors = null;
 
+    // dedupe reset
     S.lastTrackSeen = "";
     S.lastVisualSeen = "";
     S.lastEmitText = "";
     S.lastEmitAt = 0;
 
+    // recompute
     S.effectiveFuente = "visual";
     S.lastSig = "";
 
     rehookTick();
-    KWMP.overlay?.updateOverlayTracksList?.();
-    KWMP.overlay?.updateOverlayStatus?.();
+    KWSR.overlay?.updateOverlayTracksList?.();
+    KWSR.overlay?.updateOverlayStatus?.();
   }
 
   // ✅ Solo crea/actualiza UI cuando visible=true
   function setUIVisible(visible) {
     if (!visible) {
       // Ocultar todo (si existe) + cerrar panel
-      KWMP.overlay?.setPanelOpen?.(false);
-      KWMP.overlay?.setOverlayVisible?.(false); // si existe helper
+      KWSR.overlay?.setPanelOpen?.(false);
+      KWSR.overlay?.setOverlayVisible?.(false);
       return;
     }
 
     // Crear overlay SOLO cuando ON
-    KWMP.overlay?.ensureOverlay?.();
-    KWMP.overlay?.setOverlayVisible?.(true); // si existe helper
+    KWSR.overlay?.ensureOverlay?.();
+    KWSR.overlay?.setOverlayVisible?.(true);
 
-    KWMP.overlay?.setPanelOpen?.(false); // panel cerrado por defecto
-    KWMP.overlay?.updateOverlayTracksList?.();
-    KWMP.overlay?.updateOverlayStatus?.();
+    KWSR.overlay?.setPanelOpen?.(false); // panel cerrado por defecto
+    KWSR.overlay?.updateOverlayTracksList?.();
+    KWSR.overlay?.updateOverlayStatus?.();
   }
 
   function computeSignature(v, t) {
@@ -112,7 +136,7 @@
 
   function rehookTick() {
     // 1) video main
-    const v = KWMP.video?.getMainVideo?.();
+    const v = KWSR.video?.getMainVideo?.() || null;
     if (v !== S.currentVideo) {
       S.currentVideo = v;
 
@@ -124,16 +148,16 @@
 
       S.visualNode = null;
       S.visualSelectors = null;
-      KWMP.visual?.stopVisualObserver?.();
+      try { KWSR.visual?.stopVisualObserver?.(); } catch {}
 
-      KWMP.overlay?.updateOverlayTracksList?.();
-      KWMP.overlay?.updateOverlayStatus?.();
+      KWSR.overlay?.updateOverlayTracksList?.();
+      KWSR.overlay?.updateOverlayStatus?.();
     }
 
     if (!S.extensionActiva) return;
 
     // 2) elegir fuente efectiva
-    const hasUsableTracks = KWMP.track?.videoHasUsableTracks?.(S.currentVideo) || false;
+    const hasUsableTracks = KWSR.track?.videoHasUsableTracks?.(S.currentVideo) || false;
 
     S.effectiveFuente =
       S.fuenteSubGlobal === "auto"
@@ -142,7 +166,7 @@
 
     // 3) limpiar pipeline contrario
     if (S.effectiveFuente === "track") {
-      KWMP.visual?.stopVisualObserver?.();
+      try { KWSR.visual?.stopVisualObserver?.(); } catch {}
       S.visualNode = null;
       S.visualSelectors = null;
     } else {
@@ -152,7 +176,7 @@
 
     // 4) signature
     const bestTrack = (S.effectiveFuente === "track")
-      ? (KWMP.track?.pickBestTrack?.(S.currentVideo) || null)
+      ? (KWSR.track?.pickBestTrack?.(S.currentVideo) || null)
       : null;
 
     const sig = computeSignature(S.currentVideo, bestTrack);
@@ -161,41 +185,44 @@
       S.lastSig = sig;
 
       if (S.effectiveFuente === "track") {
-        const ok = KWMP.track?.startTrack?.();
+        const ok = KWSR.track?.startTrack?.();
         if (!ok) {
           S.effectiveFuente = "visual";
-          KWMP.visual?.startVisual?.();
+          KWSR.visual?.startVisual?.();
         }
       } else {
-        KWMP.visual?.startVisual?.();
+        KWSR.visual?.startVisual?.();
       }
 
-      KWMP.overlay?.updateOverlayStatus?.();
+      KWSR.overlay?.updateOverlayStatus?.();
     }
 
-    if (getPlatform() === "flow") KWMP.flowA11y?.labelFlowControls?.();
+    // Si aplica fixes para UI no accesible, etiquetamos controles (sin hardcode por plataforma)
+    const caps = getCaps(getPlatform());
+    if (caps.nonAccessibleFixes) KWSR.nonAccessiblePlatforms?.labelControlsNearVideo?.();
   }
 
   function toggleExtension() {
     S.extensionActiva = !S.extensionActiva;
-    const label = platformLabel(getPlatform());
+    const p = getPlatform();
+    const label = platformLabel(p);
 
     if (S.extensionActiva) {
-      KWMP.log?.("Toggle ON", { platform: getPlatform() });
+      KWSR.log?.("Toggle ON", { platform: p });
 
       // ✅ recién ahora creamos UI visible
       setUIVisible(true);
 
-      KWMP.voice?.cargarVozES?.();
-      KWMP.toast?.notify?.(`🟢 KathWare ON — ${label}`);
+      KWSR.voice?.cargarVozES?.();
+      KWSR.toast?.notify?.(`🟢 KathWare ON — ${label}`);
 
       startTimers();
       S.effectiveFuente = "visual";
       rehookTick();
     } else {
-      KWMP.log?.("Toggle OFF", { platform: getPlatform() });
+      KWSR.log?.("Toggle OFF", { platform: p });
 
-      KWMP.toast?.notify?.(`🔴 KathWare OFF — ${label}`);
+      KWSR.toast?.notify?.(`🔴 KathWare OFF — ${label}`);
       stopAll();
 
       // ✅ ocultar UI (sin dejar pill/panel)
@@ -206,19 +233,19 @@
   function init() {
     // ✅ NO crear UI en init
     const after = () => {
-      S.currentVideo = KWMP.video?.getMainVideo?.() || null;
-      KWMP.log?.("content cargado (UI lazy)", { host: location.hostname, platform: getPlatform() });
+      S.currentVideo = KWSR.video?.getMainVideo?.() || null;
+      KWSR.log?.("content cargado (UI lazy)", { host: location.hostname, platform: getPlatform() });
       // No overlay, no panel, no live region.
     };
 
-    if (KWMP.storage?.cargarConfigDesdeStorage) {
-      KWMP.storage.cargarConfigDesdeStorage(after);
+    if (KWSR.storage?.cargarConfigDesdeStorage) {
+      KWSR.storage.cargarConfigDesdeStorage(after);
     } else {
       after();
     }
   }
 
-  KWMP.pipeline = {
+  KWSR.pipeline = {
     init,
     toggleExtension,
     restartPipeline,
@@ -227,4 +254,20 @@
     stopAll,
     setUIVisible
   };
+
+  /*
+  ===========================
+  Cambios aplicados (resumen)
+  ===========================
+  - Rebrand: KWMP -> KWSR.
+  - Se eliminó el hardcode “flow” del pipeline.
+  - Nuevo timer unificado para adapters (CFG.adaptersMs):
+      - KWSR.keepAlive.tick() -> mantiene visibles controles que se esconden
+      - KWSR.nonAccessiblePlatforms.tick() -> autolabeling de controles cerca del video
+  - Menús audio/subs: startMenuObserver/stopMenuObserver ahora dependen de
+    platformCapabilities().nonAccessibleFixes (no del hostname “flow”).
+  - rehookTick: sigue el mismo esquema (AUTO -> TRACK si hay pistas usables, si no VISUAL),
+    pero al final aplica fixes genéricos si capabilities lo pide.
+  - UI sigue siendo lazy: NO se crea overlay hasta que el usuario activa (ON).
+  */
 })();
