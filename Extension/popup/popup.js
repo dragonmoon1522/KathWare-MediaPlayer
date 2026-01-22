@@ -1,8 +1,8 @@
 // ====================================================
-// KathWare Media Player - popup.js
+// KathWare SubtitleReader - popup.js
 // - Cambios de settings -> storage + sendMessage(updateSettings)
-// - Track list via content.js -> type:getTracks
-// - Reporte -> abre GitHub Issue prellenado (repo: dragonmoon1522/KathWare-MediaPlayer)
+// - Track list via content script -> type:getTracks
+// - Reporte -> abre GitHub Issue prellenado (repo: dragonmoon1522/KathWare-SubtitleReader)
 // ====================================================
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -15,7 +15,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const permitirEnvioLogs = document.getElementById("permitirEnvioLogs");
 
   const GITHUB_OWNER = "dragonmoon1522";
-  const GITHUB_REPO = "KathWare-MediaPlayer";
+  const GITHUB_REPO = "KathWare-SubtitleReader";
 
   // === Helpers ===
   function withActiveTab(cb) {
@@ -38,12 +38,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // === Cargar valores guardados ===
   chrome.storage.local.get(["modoNarrador", "fuenteSub", "trackIndex"], (data) => {
-    if (data.modoNarrador && modoNarrador) modoNarrador.value = data.modoNarrador;
-    if (data.fuenteSub && fuenteSub) fuenteSub.value = data.fuenteSub;
-    if (typeof data.trackIndex !== "undefined" && selectorTrack) selectorTrack.value = String(data.trackIndex);
+    if (data?.modoNarrador && modoNarrador) modoNarrador.value = data.modoNarrador;
+    if (data?.fuenteSub && fuenteSub) fuenteSub.value = data.fuenteSub;
+    if (typeof data?.trackIndex !== "undefined" && selectorTrack) selectorTrack.value = String(data.trackIndex);
   });
 
-  // === Guardar configuraciones + notificar al content.js ===
+  // === Guardar configuraciones + notificar al content script ===
   modoNarrador?.addEventListener("change", () => {
     chrome.storage.local.set({ modoNarrador: modoNarrador.value }, notificarCambio);
   });
@@ -64,10 +64,9 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // === Obtener tracks desde content.js ===
+  // === Obtener tracks desde content script ===
   withActiveTab((tabId) => {
     chrome.tabs.sendMessage(tabId, { type: "getTracks" }, (response) => {
-      // si no hay content script, no rompemos el popup
       const err = chrome.runtime.lastError;
       if (err) {
         if (selectorTrack) {
@@ -103,10 +102,8 @@ document.addEventListener("DOMContentLoaded", () => {
       });
 
       chrome.storage.local.get("trackIndex", (data) => {
-        const idx = (typeof data.trackIndex !== "undefined") ? String(data.trackIndex) : "0";
-        if (selectorTrack.querySelector(`option[value="${idx}"]`)) {
-          selectorTrack.value = idx;
-        }
+        const idx = (typeof data?.trackIndex !== "undefined") ? String(data.trackIndex) : "0";
+        if (selectorTrack.querySelector(`option[value="${idx}"]`)) selectorTrack.value = idx;
       });
     });
   });
@@ -114,14 +111,19 @@ document.addEventListener("DOMContentLoaded", () => {
   // === Reporte -> GitHub Issue prellenado ===
   function inferPlatformFromUrl(url) {
     try {
-      const h = new URL(url).hostname.toLowerCase();
+      const u = new URL(url);
+      const h = (u.hostname || "").toLowerCase();
+      const p = u.pathname || "";
+
       if (h.includes("netflix")) return "netflix";
       if (h.includes("disneyplus") || h.includes("disney")) return "disney";
-      if (h.includes("hbomax") || h.includes("max.com") || h.includes("play.hbomax.com")) return "max";
-      if (h.includes("youtube")) return "youtube";
-      if (h.includes("primevideo") || h.includes("amazon")) return "prime";
+      if (h.includes("hbomax") || h === "max.com" || h.endsWith(".max.com") || h.includes("play.hbomax.com")) return "max";
+      if (h.includes("youtube") || h.includes("youtu.be")) return "youtube";
+      if (h.includes("primevideo.com")) return "prime";
+      if ((h === "amazon.com" || h.endsWith(".amazon.com")) && p.startsWith("/gp/video")) return "prime";
       if (h.includes("paramountplus")) return "paramount";
       if (h.includes("flow.com.ar")) return "flow";
+
       return "generic";
     } catch {
       return "generic";
@@ -152,8 +154,8 @@ document.addEventListener("DOMContentLoaded", () => {
     lines.push(`- Versión: ${reporte.version || "(desconocida)"}`);
     lines.push(`- Plataforma: ${reporte.platform || "(desconocida)"}`);
     lines.push(`- URL: ${reporte.url || "(no disponible)"}`);
-    lines.push(`- Modo narrador: ${reporte.modoNarrador || "(n/a)"}`);
-    lines.push(`- Fuente subs: ${reporte.fuenteSub || "(n/a)"}`);
+    lines.push(`- Modo: ${reporte.modoNarrador || "(n/a)"}`);
+    lines.push(`- Fuente: ${reporte.fuenteSub || "(n/a)"}`);
     lines.push(`- Track index: ${String(reporte.trackIndex ?? "(n/a)")}`);
     lines.push(`- Navegador/OS: ${reporte.ua || "(n/a)"}`);
     lines.push("");

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "KathWare Media Player",
-  "description": "Extensión de accesibilidad para lectura de subtítulos en reproductores web.",
+  "name": "KathWare SubtitleReader",
+  "description": "Extensión de accesibilidad que lee subtítulos, transcripciones y traducciones en tiempo real con lectores de pantalla, sintetizadores de voz y líneas braille. Incluye controles accesibles cuando una plataforma no es usable.",
   "version": "2.0.0",
   "author": "Katherine Vargas (KathWare)",
 
@@ -9,11 +9,11 @@
   "host_permissions": ["<all_urls>"],
 
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background/background.js"
   },
 
   "action": {
-    "default_popup": "popup.html",
+    "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -25,29 +25,34 @@
     {
       "matches": ["<all_urls>"],
       "js": [
-        "content/kwmp.bootstrap.js",
-        "content/kwmp.utils.js",
-        "content/kwmp.platforms.js",
-        "content/kwmp.voice.js",
-        "content/kwmp.toast.js",
-        "content/kwmp.overlay.js",
-        "content/kwmp.video.js",
-        "content/kwmp.track.js",
-        "content/kwmp.visual.js",
-        "content/kwmp.flowA11y.js",
-        "content/kwmp.pipeline.js",
-        "content/kwmp.hotkeys.js"
+        "content/core/kwsr.bootstrap.js",
+        "content/core/kwsr.utils.js",
+        "content/core/kwsr.platforms.js",
+
+        "content/core/kwsr.voice.js",
+        "content/core/kwsr.video.js",
+        "content/core/kwsr.track.js",
+        "content/core/kwsr.visual.js",
+
+        "content/ui/kwsr.toast.js",
+        "content/ui/kwsr.overlay.js",
+
+        "content/adapters/kwsr.keepAlive.js",
+        "content/adapters/kwsr.nonAccessibleFixes.platforms.js",
+
+        "content/core/kwsr.pipeline.js",
+        "content/core/kwsr.hotkeys.js"
       ],
       "run_at": "document_idle"
     }
   ],
 
   "commands": {
-    "toggle_kathware_narrator": {
+    "toggle_kathware_subtitlereader": {
       "suggested_key": {
         "default": "Alt+Shift+K"
       },
-      "description": "Activar o desactivar KathWare Media Player"
+      "description": "Activar o desactivar KathWare SubtitleReader"
     }
   },
 
