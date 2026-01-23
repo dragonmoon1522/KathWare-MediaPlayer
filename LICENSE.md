@@ -2,7 +2,7 @@
 
 Este repositorio forma parte del ecosistema KathWare y está protegido por un conjunto de licencias que cubren diferentes tipos de contenido:
 
-## 1. Licencia de Accesibilidad Universal (LAU) — v1.1
+## 1. Licencia de Accesibilidad Universal (LAU) — v1.2
 
 Aplicable a la totalidad del proyecto (código, textos, interfaces, archivos y recursos) siempre que promueva la accesibilidad como principio ético.  
 Más información: [https://kathware.com.ar/lau/](https://kathware.com.ar/lau/)

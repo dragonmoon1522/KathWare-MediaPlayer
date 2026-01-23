@@ -81,7 +81,7 @@ Podés contribuir de las siguientes formas:
 
 Este proyecto está licenciado bajo:
 
-- [Licencia de Accesibilidad Universal (LAU) v1.1](https://kathware.com.ar/lau/)
+- [Licencia de Accesibilidad Universal (LAU) v1.2](https://kathware.com.ar/lau/)
 - [Creative Commons BY-NC-SA 4.0](https://kathware.com.ar/normas-de-uso-y-licencias-de-kathware/)
 
 ---
