@@ -2,6 +2,11 @@
 // KathWare SubtitleReader - kwsr.overlay.js
 // - UI (pill + panel) + controles del player + hotkeys player
 // - Importante: se crea SOLO cuando ensureOverlay() es llamado (lazy)
+//
+// FIX:
+// - Evita crashear con "Extension context invalidated" cuando la extensión se recarga
+//   y la pestaña todavía no fue recargada.
+// - Se blinda storage.set / runtime calls en handlers del overlay.
 // ====================================================
 
 (() => {
@@ -21,6 +26,40 @@
     return false;
   });
 
+  // ------------------ Safety: context invalidated ------------------
+  function isContextInvalidatedError(err) {
+    const msg = String(err?.message || err || "");
+    return (
+      msg.includes("Extension context invalidated") ||
+      msg.includes("context invalidated") ||
+      msg.includes("message channel closed") ||
+      msg.includes("The message port closed")
+    );
+  }
+
+  function notifyReloadNeeded() {
+    try { KWSR.toast?.notify?.("⚠️ La extensión se recargó. Recargá la página (F5) y probá de nuevo."); } catch {}
+    try { S.overlayPanel && (S.overlayPanel.style.display = "none"); } catch {}
+    try { S.overlayRoot && (S.overlayRoot.style.display = "none"); } catch {}
+  }
+
+  function safeExtCall(fn) {
+    try {
+      // Si el runtime existe pero no hay runtime.id, suele ser invalidación.
+      if (typeof chrome !== "undefined" && chrome?.runtime && !chrome.runtime.id) {
+        throw new Error("Extension context invalidated.");
+      }
+      return fn();
+    } catch (e) {
+      if (isContextInvalidatedError(e)) {
+        notifyReloadNeeded();
+        return;
+      }
+      throw e;
+    }
+  }
+
+  // ------------------ UI ------------------
   function ensureOverlay() {
     if (S.overlayRoot) return;
 
@@ -155,29 +194,35 @@
     S.overlayModoSelect = modoSelect;
     S.overlayFuenteSelect = fuenteSelect;
 
-    // listeners
+    // listeners (BLINDADOS)
     modoSelect.addEventListener("change", () => {
-      S.modoNarradorGlobal = modoSelect.value;
-      KWSR.api?.storage?.local?.set?.({ modoNarrador: S.modoNarradorGlobal });
-      if (S.modoNarradorGlobal === "off") KWSR.voice?.detenerLectura?.();
-      updateOverlayStatus();
+      safeExtCall(() => {
+        S.modoNarradorGlobal = modoSelect.value;
+        KWSR.api?.storage?.local?.set?.({ modoNarrador: S.modoNarradorGlobal });
+        if (S.modoNarradorGlobal === "off") KWSR.voice?.detenerLectura?.();
+        updateOverlayStatus();
+      });
     });
 
     fuenteSelect.addEventListener("change", () => {
-      S.fuenteSubGlobal = fuenteSelect.value;
-      KWSR.api?.storage?.local?.set?.({ fuenteSub: S.fuenteSubGlobal });
-      if (S.extensionActiva) KWSR.pipeline?.restartPipeline?.();
-      updateOverlayStatus();
+      safeExtCall(() => {
+        S.fuenteSubGlobal = fuenteSelect.value;
+        KWSR.api?.storage?.local?.set?.({ fuenteSub: S.fuenteSubGlobal });
+        if (S.extensionActiva) KWSR.pipeline?.restartPipeline?.();
+        updateOverlayStatus();
+      });
     });
 
     trackSelect.addEventListener("change", () => {
-      const idx = Number(trackSelect.value);
-      if (Number.isFinite(idx)) {
-        S.trackIndexGlobal = idx;
-        KWSR.api?.storage?.local?.set?.({ trackIndex: S.trackIndexGlobal });
-        if (S.extensionActiva) KWSR.pipeline?.restartPipeline?.();
-        updateOverlayStatus();
-      }
+      safeExtCall(() => {
+        const idx = Number(trackSelect.value);
+        if (Number.isFinite(idx)) {
+          S.trackIndexGlobal = idx;
+          KWSR.api?.storage?.local?.set?.({ trackIndex: S.trackIndexGlobal });
+          if (S.extensionActiva) KWSR.pipeline?.restartPipeline?.();
+          updateOverlayStatus();
+        }
+      });
     });
   }
 
@@ -313,9 +358,8 @@
 
     const panelOpen = S.overlayPanel && S.overlayPanel.style.display !== "none";
 
-    // Por defecto, respetamos el comportamiento anterior:
-    // hotkeys del player solo si el panel está abierto,
-    // excepto plataformas con controles difíciles (antes Flow).
+    // Por defecto, hotkeys del player solo si el panel está abierto,
+    // excepto plataformas con controles difíciles.
     const p = KWSR.platforms?.getPlatform?.() || "generic";
     const caps = KWSR.platforms?.platformCapabilities?.(p) || { keepAlive: false, nonAccessibleFixes: false };
 
@@ -368,16 +412,4 @@
     handlePlayerHotkeys
   };
 
-  /*
-  ===========================
-  Cambios aplicados (resumen)
-  ===========================
-  - Rebrand: KWMP -> KWSR.
-  - UI: textos y aria-labels actualizados a "KathWare SubtitleReader".
-  - Fuente: el selector de fuente ahora incluye "auto" (Auto / TRACK / VISUAL), alineado con pipeline.
-  - Accesibilidad: al pedir fullscreen se avisa con toast que la lectura puede fallar en pantalla completa.
-  - Hotkeys del player: se mantiene el comportamiento original (solo con panel abierto),
-    pero se habilita también en plataformas marcadas como nonAccessibleFixes=true en platformCapabilities().
-  - updateOverlayStatus usa platformLabel/getPlatform/capabilities de KWSR.platforms (si existe).
-  */
 })();
