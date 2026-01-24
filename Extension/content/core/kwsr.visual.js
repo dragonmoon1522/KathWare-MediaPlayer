@@ -140,8 +140,29 @@
       uniq.push(x);
     }
 
-    // Disney suele tener 1 o 2 líneas: unir con " / " evita que se aplaste todo como una frase eterna
-    return normalize(uniq.join(" / "));
+    function smartJoin(lines) {
+  if (!lines.length) return "";
+
+  const out = [lines[0]];
+
+  for (let i = 1; i < lines.length; i++) {
+    const prev = out[out.length - 1];
+    const curr = lines[i];
+
+    // si la línea anterior termina “cerrada”, unir normal
+    if (/[.!?…]$/.test(prev.trim())) {
+      out[out.length - 1] = prev + " " + curr;
+    } else {
+      // si no, es probable salto de línea visual
+      out[out.length - 1] = prev + " / " + curr;
+    }
+  }
+
+  return normalize(out.join(""));
+}
+
+    return smartJoin(uniq);
+
   }
 
   function pickBestSelector(p) {
