@@ -141,25 +141,33 @@
     }
 
     function smartJoin(lines) {
-  if (!lines.length) return "";
+  if (!lines || !lines.length) return "";
 
-  const out = [lines[0]];
+  let result = lines[0];
 
   for (let i = 1; i < lines.length; i++) {
-    const prev = out[out.length - 1];
+    const prev = result.trim();
     const curr = lines[i];
 
-    // si la línea anterior termina “cerrada”, unir normal
-    if (/[.!?…]$/.test(prev.trim())) {
-      out[out.length - 1] = prev + " " + curr;
-    } else {
-      // si no, es probable salto de línea visual
-      out[out.length - 1] = prev + " / " + curr;
+    // Si ya hay puntuación fuerte, no inventamos nada
+    if (/[.!?…]$/.test(prev)) {
+      result = prev + " " + curr;
+      continue;
     }
+
+    // Si ambas parecen fragmentos cortos e independientes → coma
+    if (prev.length < 40 && curr.length < 40) {
+      result = prev + ", " + curr;
+      continue;
+    }
+
+    // Caso general: continuidad natural
+    result = prev + " " + curr;
   }
 
-  return normalize(out.join(""));
+  return normalize(result);
 }
+
 
     return smartJoin(uniq);
 
