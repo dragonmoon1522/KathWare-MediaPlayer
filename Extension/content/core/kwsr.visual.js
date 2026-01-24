@@ -1,13 +1,11 @@
 // ====================================================
 // KathWare SubtitleReader - kwsr.visual.js
 // - VISUAL engine: detecta texto “en pantalla” vía selectores por plataforma
-// - MutationObserver + polling fallback + reselection
 //
-// FIX (Disney+):
-// - NO cachea nodes (Disney los recrea): re-query por selector en cada tick
-// - Prioriza ".hive-subtitle-renderer-line"
-// - Lee múltiples líneas (join)
-// - Filtro anti “menú de idiomas” por contenido (sin depender de dialogs/drawers)
+// Disney hard-fix:
+// - En Disney SOLO leemos hive subtitles (líneas) y nada más.
+// - Bloqueo duro anti menú Audio/Subtítulos + idiomas (aunque el selector matchee)
+// - Re-query constante (Disney recrea nodos)
 // ====================================================
 
 (() => {
@@ -21,32 +19,37 @@
     return KWSR.platforms?.getPlatform?.() || "generic";
   }
 
-  function looksLikeLanguageMenuBlob(text) {
+  // -------------------- Anti “Audio/Subtítulos + idiomas” (hard) --------------------
+  function isLanguageMenuText(text) {
     const t = normalize(text);
     if (!t) return false;
 
     const lower = t.toLowerCase();
 
-    // “Audio … Subtítulos … <lista gigante de idiomas>”
-    const hasAudioSubs =
-      lower.includes("audio") &&
-      (lower.includes("subtítulos") || lower.includes("subtitulos") || lower.includes("subtitles"));
+    // Señales fuertes del menú
+    const strong =
+      lower.includes("audio") ||
+      lower.includes("subtítulos") ||
+      lower.includes("subtitulos") ||
+      lower.includes("subtitles") ||
+      lower.includes("[cc]") ||
+      lower.includes("cc ");
 
-    if (!hasAudioSubs) return false;
+    if (!strong) return false;
 
-    const langHits = [
+    // Conteo de idiomas / tokens típicos del listado
+    const hits = [
       "english","deutsch","español","espanol","français","francais","italiano","português","portugues",
       "polski","magyar","dansk","norsk","svenska","suomi","türkçe","turkce","čeština","cestina",
-      "română","romana","slovenčina","slovencina","nederlands","ελληνικά","日本語","한국어","chinese"
+      "română","romana","slovenčina","slovencina","nederlands","ελληνικά","日本語","한국어",
+      "chinese","简体","繁體","粵語","bokmål","brasil","canada"
     ].reduce((acc, w) => acc + (lower.includes(w) ? 1 : 0), 0);
 
-    if (langHits >= 4) return true;
+    // Si aparecen varios idiomas, es menú casi seguro
+    if (hits >= 3) return true;
 
-    // blobs largos con CC suelen ser menú
-    if (t.length > 180 && (lower.includes("[cc]") || /\bcc\b/.test(lower))) return true;
-
-    // demasiado largo: UI, no subs
-    if (t.length > 240) return true;
+    // Textos larguísimos con esas palabras => menú
+    if (t.length > 160 && strong) return true;
 
     return false;
   }
@@ -55,47 +58,71 @@
     const t = normalize(text);
     if (!t) return true;
 
-    // 🚫 anti “salchicha”
-    if (looksLikeLanguageMenuBlob(t)) return true;
+    // 🚫 bloqueo duro del menú, siempre
+    if (isLanguageMenuText(t)) return true;
 
     const tag = (node?.tagName || "").toUpperCase();
-    if (["H1","H2","H3","H4","H5","H6","HEADER","NAV","MAIN","ARTICLE","ASIDE","FOOTER"].includes(tag)) return true;
     if (["A","BUTTON","INPUT","TEXTAREA","SELECT","LABEL"].includes(tag)) return true;
 
+    // límites generales
     if (t.length < 2 || t.length > 420) return true;
 
     const cls = ((node?.className || "") + " " + (node?.id || "")).toLowerCase();
-    if (/toast|snack|tooltip|popover|modal|dialog|notif|banner|sr-only|screenreader-only/.test(cls)) return true;
+    if (/toast|snack|tooltip|popover|modal|dialog|notif|banner|menu|drawer|sheet|panel|settings/.test(cls)) {
+      // ojo: esto puede cortar subtítulos si el player usa “panel” en class, pero en Disney hive-line no debería caer acá.
+      // igual lo dejamos suave: si parece subtítulo, lo permitimos después.
+    }
 
     return false;
   }
 
-  function ensureDisneySelectorsFirst(selectors) {
-    if (platform() !== "disney") return selectors || [];
-
-    const must = [
+  // -------------------- Disney: aceptar SOLO hive subtitles --------------------
+  function disneyOnlySelectors() {
+    return [
       ".hive-subtitle-renderer-line",
-      "[class*='hive-subtitle']"
+      ".hive-subtitle-renderer-line *",
+      "[class*='hive-subtitle']",
+      "[class*='hiveSubtitle']"
     ];
-
-    const out = [];
-    for (const m of must) if (!out.includes(m)) out.push(m);
-    for (const s of (selectors || [])) if (!out.includes(s)) out.push(s);
-    return out;
   }
 
-  function readVisualTextFromNodes(nodes) {
+  function getSelectors() {
+    const p = platform();
+    if (p === "disney") return disneyOnlySelectors();
+    return KWSR.platforms?.platformSelectors?.(p) || [];
+  }
+
+  function getFreshNodesBySelector(sel) {
+    try { return Array.from(document.querySelectorAll(sel)); } catch { return []; }
+  }
+
+  function readTextFromNodes(nodes, p) {
     if (!nodes?.length) return "";
 
     const parts = [];
     for (const n of nodes) {
-      const t = normalize(n?.textContent);
+      const raw = n?.textContent;
+      const t = normalize(raw);
       if (!t) continue;
+
+      // Disney: si por algún motivo cuela el menú, lo cortamos acá también
+      if (p === "disney" && isLanguageMenuText(t)) continue;
+
+      // Disney: subtítulo real suele ser corto. Si es larguísimo, no es.
+      if (p === "disney" && t.length > 140) continue;
+
+      // Heurística extra: evitar cosas con “T##:E##” (título/episodio) pegado al menú
+      if (p === "disney" && /t\d+\s*:\s*e\d+/i.test(t) && t.length > 60) continue;
+
+      // ruido general
       if (looksLikeNoise(n, t)) continue;
+
       parts.push(t);
     }
 
-    // dedupe dentro del mismo tick
+    if (!parts.length) return "";
+
+    // dedupe dentro del tick
     const uniq = [];
     const seen = new Set();
     for (const p of parts) {
@@ -107,29 +134,15 @@
     return normalize(uniq.join(" "));
   }
 
-  // 🔥 clave: en Disney NO cachear nodes (se reemplazan); cacheamos SOLO selector y re-queryamos.
-  function getFreshNodesBySelector(sel) {
-    if (!sel) return [];
-    try { return Array.from(document.querySelectorAll(sel)); } catch { return []; }
-  }
-
-  function pickBestSelector() {
-    const p = platform();
-    const selectorsRaw = S.visualSelectors || [];
-    const selectors = ensureDisneySelectorsFirst(selectorsRaw);
-
+  function pickBestSelector(p) {
+    const selectors = getSelectors();
     for (const sel of selectors) {
       const nodes = getFreshNodesBySelector(sel);
       if (!nodes.length) continue;
 
-      // Flow/theoplayer prefer
-      const theoTTML = nodes.find(n => (n.className || "").toString().includes("theoplayer-ttml-texttrack-"));
-      if (theoTTML) return sel;
-
-      const text = readVisualTextFromNodes(nodes);
+      const text = readTextFromNodes(nodes, p);
       if (text) return sel;
     }
-
     return "";
   }
 
@@ -141,52 +154,35 @@
 
   function startVisual() {
     const p = platform();
-    S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
-    S.visualSelectors = ensureDisneySelectorsFirst(S.visualSelectors);
+    S.visualSelectors = getSelectors();
 
-    // Elegimos selector (no nodes)
-    const pickedSel = pickBestSelector();
-    S.visualSelectorUsed = pickedSel || "";
+    // selector “ganador”
+    S.visualSelectorUsed = pickBestSelector(p);
 
     stopVisualObserver();
 
-    // Observamos algo estable:
-    // - Disney: documentElement (porque hive-lines se recrean)
-    // - Otros: también sirve documentElement (más simple/robusto)
     try {
       S.visualObserver = new MutationObserver(() => {
         if (!KWSR.voice.shouldReadNow()) return;
         if (S.effectiveFuente !== "visual") return;
 
-        // Si no hay selector, intentamos encontrar uno
         if (!S.visualSelectorUsed) {
-          const sel = pickBestSelector();
-          if (sel) S.visualSelectorUsed = sel;
-          else return;
+          S.visualSelectorUsed = pickBestSelector(p);
+          if (!S.visualSelectorUsed) return;
         }
 
         const nodes = getFreshNodesBySelector(S.visualSelectorUsed);
-        const t = readVisualTextFromNodes(nodes);
+        const t = readTextFromNodes(nodes, p);
         if (!t) return;
 
         if (t === S.lastVisualSeen) return;
         S.lastVisualSeen = t;
 
-        KWSR.log?.("VISUAL", {
-          sel: S.visualSelectorUsed,
-          nodes: nodes.length,
-          text: t.slice(0, 120)
-        });
-
         KWSR.voice.leerTextoAccesible(t);
       });
 
-      S.visualObserver.observe(document.documentElement, {
-        childList: true,
-        subtree: true,
-        characterData: true
-      });
-
+      // Disney recrea DOM: observar doc entero
+      S.visualObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
       S.visualObserverActive = true;
     } catch {
       S.visualObserverActive = false;
@@ -200,69 +196,33 @@
     if (S.effectiveFuente !== "visual") return;
 
     const p = platform();
-
-    if (!S.visualSelectors) {
-      S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
-      S.visualSelectors = ensureDisneySelectorsFirst(S.visualSelectors);
-    }
+    if (!S.visualSelectors) S.visualSelectors = getSelectors();
 
     if (!S.visualSelectorUsed) {
-      const sel = pickBestSelector();
-      if (sel) {
-        S.visualSelectorUsed = sel;
-        // si no hay observer activo, lo arrancamos
-        if (!S.visualObserverActive) startVisual();
-      } else {
-        return;
-      }
+      S.visualSelectorUsed = pickBestSelector(p);
+      if (!S.visualSelectorUsed) return;
     }
 
-    // Si observer está activo, poll no hace falta, pero lo dejamos como fallback suave
-    // (en Disney a veces el observer no dispara como esperás)
     const nodes = getFreshNodesBySelector(S.visualSelectorUsed);
-    const t = readVisualTextFromNodes(nodes);
+    const t = readTextFromNodes(nodes, p);
     if (!t) return;
 
     if (t === S.lastVisualSeen) return;
     S.lastVisualSeen = t;
-
-    KWSR.log?.("VISUAL(poll)", {
-      sel: S.visualSelectorUsed,
-      nodes: nodes.length,
-      text: t.slice(0, 120)
-    });
 
     KWSR.voice.leerTextoAccesible(t);
   }
 
   function visualReselectTick() {
     const p = platform();
-
-    if (!S.visualSelectors) {
-      S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
-      S.visualSelectors = ensureDisneySelectorsFirst(S.visualSelectors);
-    }
-
-    const prevSel = S.visualSelectorUsed || "";
-    const nextSel = pickBestSelector();
-
-    if (nextSel && nextSel !== prevSel) {
-      S.visualSelectorUsed = nextSel;
+    const next = pickBestSelector(p);
+    if (next && next !== (S.visualSelectorUsed || "")) {
+      S.visualSelectorUsed = next;
       startVisual();
-    }
-
-    // Si perdimos selector (DOM cambió), reintentar
-    if (!nextSel && prevSel) {
-      // si el selector anterior ya no devuelve nada, lo soltamos
-      const nodes = getFreshNodesBySelector(prevSel);
-      if (!nodes.length) {
-        S.visualSelectorUsed = "";
-      }
     }
   }
 
   KWSR.visual = {
-    looksLikeNoise,
     startVisual,
     stopVisualObserver,
     pollVisualTick,
