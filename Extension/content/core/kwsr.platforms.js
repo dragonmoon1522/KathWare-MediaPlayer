@@ -29,8 +29,10 @@
     if (h.includes("hulu")) return "hulu";
     if (h.includes("peacocktv")) return "peacock";
     if (h.includes("crunchyroll")) return "crunchyroll";
-    if (h.includes("apple.com") && location.pathname.startsWith("/tv")) return "appletv";
+
+    // Apple TV: mejor ser estrictos para no matchear cualquier apple.com
     if (h.includes("tv.apple.com")) return "appletv";
+
     if (h.includes("mubi")) return "mubi";
     if (h.includes("pluto.tv")) return "plutotv";
     if (h.includes("tubi.tv")) return "tubi";
@@ -41,7 +43,8 @@
     if (h.includes("flow.com.ar")) return "flow";
 
     // --- Meetings / Collaboration (para el futuro) ---
-    if (h.includes("teams.microsoft") || h.includes("teams.live") || h.includes("microsoft.com")) return "teams_web";
+    // Ojo: microsoft.com es demasiado broad; lo recortamos a dominios típicos de Teams web.
+    if (h.includes("teams.microsoft") || h.includes("teams.live") || h.includes("teams.microsoft.com")) return "teams_web";
     if (h.includes("zoom.us")) return "zoom_web";
     if (h.includes("meet.google.com")) return "google_meet";
 
@@ -76,40 +79,27 @@
   }
 
   // Capabilities por plataforma
-  // - keepAlive: controles se esconden y necesitamos “despertarlos”
-  // - nonAccessibleFixes: controles poco accesibles (icon-only, sin aria-label, etc.)
   function platformCapabilities(p) {
-    // Por defecto, nada agresivo.
     const caps = { keepAlive: false, nonAccessibleFixes: false };
 
-    // Streaming típico: controles se esconden
     if (p === "netflix" || p === "max" || p === "disney" || p === "prime" || p === "paramount" || p === "hulu" || p === "peacock") {
       caps.keepAlive = true;
     }
 
-    // Plataformas “difíciles” o con controles icon-only frecuentes
-    // (históricamente Flow; lo dejamos genérico para que puedas sumar/ajustar)
     if (p === "flow") {
       caps.keepAlive = true;
       caps.nonAccessibleFixes = true;
     }
 
-    // Twitch a veces es un festival de overlays / icon-only
     if (p === "twitch") {
       caps.keepAlive = true;
       caps.nonAccessibleFixes = true;
     }
 
-    // Dailymotion/otros: por ahora solo keepAlive si querés (lo dejo conservador)
-    // caps.keepAlive = caps.keepAlive || (p === "dailymotion");
-
-    // Para Teams/Zoom/Meet web: por ahora NO activamos adapters agresivos por defecto
-    // (cuando lo integremos, lo haríamos con selectors específicos de captions/transcript).
     return caps;
   }
 
-  // Selectores VISUAL (texto en pantalla accesible/DOM) por plataforma
-  // Nota: esto es “best effort”. El engine TRACK siempre tiene prioridad en AUTO si hay textTracks usables.
+  // Selectores VISUAL por plataforma
   function platformSelectors(p) {
     if (p === "flow") {
       return [
@@ -139,6 +129,12 @@
 
     if (p === "disney") {
       return [
+        // ✅ Disney real-world winner (líneas)
+        ".hive-subtitle-renderer-line",
+        // ✅ por si mañana cambia nombre de clase pero queda el wrapper
+        "[class*='hive-subtitle']",
+
+        // fallbacks genéricos
         "[class*='subtitle']",
         "[class*='subtitles']",
         "[class*='caption']",
@@ -225,7 +221,6 @@
       ];
     }
 
-    // Meetings/web captions (placeholder suave — lo refinamos cuando integremos Teams)
     if (p === "teams_web" || p === "zoom_web" || p === "google_meet") {
       return [
         "[aria-live='polite']",
@@ -234,7 +229,6 @@
       ];
     }
 
-    // Generic fallback
     return [
       ".plyr__caption",
       ".flirc-caption",
@@ -252,18 +246,4 @@
     platformCapabilities,
     platformSelectors
   };
-
-  /*
-  ===========================
-  Cambios aplicados (resumen)
-  ===========================
-  - Rebrand: KWMP -> KWSR.
-  - Se agregó platformCapabilities() para reemplazar hardcodes por plataforma en pipeline/overlay/adapters:
-      - keepAlive: plataformas donde los controles se esconden y hay que “despertarlos”
-      - nonAccessibleFixes: plataformas con UI particularmente poco accesible (autolabel + menús)
-  - Se amplió el listado “por defecto” a ~20 plataformas comunes (Netflix/Disney/Max/YT/Prime/etc. + Crunchyroll, Twitch, Dailymotion, Vimeo, etc.).
-  - platformSelectors(): mantiene los selectores específicos que ya tenías (Flow/Max/Netflix/Disney/YT) y suma
-    fallbacks razonables por plataforma sin ponerse demasiado agresivo.
-  - Se agregaron placeholders para Teams/Zoom/Meet web (solo selectors genéricos aria-live/role, sin activar fixes).
-  */
 })();

@@ -1,12 +1,8 @@
 // ====================================================
 // KathWare SubtitleReader - kwsr.voice.js
 // - Voice engine (TTS + "lector" via liveRegion)
-// - shouldReadNow(): gating + dedupe + anti-freeze
-//
-// FIX:
-// - Si TTS falla -> NO se rompe el pipeline: fallback a "lector"
-// - Anti-freeze: si speechSynthesis queda "speaking" colgado, lo resetea
-// - Mejor logging del error real
+// - FIX: manejo real de errores async (no throw en onerror)
+// - Anti-freeze watchdog + fallback a live region
 // ====================================================
 
 (() => {
@@ -18,8 +14,12 @@
   const { normalize } = KWSR.utils;
 
   let lastSpeakAt = 0;
-  let ttsBrokenUntil = 0; // cooldown cuando TTS explota
+  let ttsBrokenUntil = 0;
   let lastTtsError = "";
+  let watchdogTimer = null;
+
+  // Si querés que al fallar TTS cambie automáticamente el modo a "lector":
+  const AUTO_SWITCH_TO_READER_ON_TTS_FAIL = true;
 
   function ensureLiveRegion() {
     if (S.liveRegion) return;
@@ -30,7 +30,7 @@
     div.setAttribute("aria-live", "polite");
     div.setAttribute("aria-atomic", "true");
 
-    // offscreen pero presente
+    // Offscreen (NO opacity:0; algunos SR ignoran elementos totalmente invisibles)
     Object.assign(div.style, {
       position: "fixed",
       left: "-9999px",
@@ -38,7 +38,9 @@
       width: "1px",
       height: "1px",
       overflow: "hidden",
-      opacity: "0"
+      clip: "rect(1px, 1px, 1px, 1px)",
+      clipPath: "inset(50%)",
+      whiteSpace: "nowrap"
     });
 
     document.documentElement.appendChild(div);
@@ -48,21 +50,25 @@
   function writeLiveRegion(text) {
     ensureLiveRegion();
     try {
-      // Truquito clásico: vaciar y volver a poner para forzar anuncio
+      // Forzar anuncio
       S.liveRegion.textContent = "";
-      // microtask
       setTimeout(() => {
         if (!S.liveRegion) return;
         S.liveRegion.textContent = text;
-      }, 0);
+      }, 10);
     } catch {}
+  }
+
+  function isTTSAvailable() {
+    return typeof speechSynthesis !== "undefined" && typeof SpeechSynthesisUtterance !== "undefined";
   }
 
   function cargarVozES() {
     try {
-      if (typeof speechSynthesis === "undefined") return;
+      if (!isTTSAvailable()) return;
       const voces = speechSynthesis.getVoices?.() || [];
       S.voiceES =
+        voces.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
         voces.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
         voces.find(v => (v.lang || "").toLowerCase().includes("es")) ||
         voces[0] ||
@@ -73,6 +79,7 @@
         try {
           const v2 = speechSynthesis.getVoices?.() || [];
           S.voiceES =
+            v2.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
             v2.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
             v2.find(v => (v.lang || "").toLowerCase().includes("es")) ||
             v2[0] ||
@@ -85,25 +92,46 @@
 
   function hardResetTTS() {
     try {
-      if (typeof speechSynthesis === "undefined") return;
+      if (!isTTSAvailable()) return;
       speechSynthesis.cancel?.();
     } catch {}
   }
 
-  function isTTSAvailable() {
-    return typeof speechSynthesis !== "undefined" && typeof SpeechSynthesisUtterance !== "undefined";
+  function clearWatchdog() {
+    try { if (watchdogTimer) clearTimeout(watchdogTimer); } catch {}
+    watchdogTimer = null;
+  }
+
+  function markTTSBroken(reason) {
+    lastTtsError = String(reason || "unknown");
+    ttsBrokenUntil = Date.now() + 4000;
+    S.ttsLastError = lastTtsError;
+    S.ttsBrokenUntil = ttsBrokenUntil;
+
+    KWSR.warn?.("TTS error", { msg: lastTtsError });
+
+    // Fallback fuerte para que NO muera el flujo
+    hardResetTTS();
+
+    if (AUTO_SWITCH_TO_READER_ON_TTS_FAIL) {
+      S.modoNarradorGlobal = "lector";
+      try { KWSR.api?.storage?.local?.set?.({ modoNarrador: "lector" }); } catch {}
+      try { KWSR.toast?.notify?.("⚠️ Falló la voz. Pasé a modo Lector automáticamente."); } catch {}
+      try { KWSR.overlay?.updateOverlayStatus?.(); } catch {}
+    }
   }
 
   function maybeUnstickTTS() {
-    // Si el motor queda colgado "speaking" pero no avanza, lo reseteamos.
     try {
       if (!isTTSAvailable()) return;
 
       const now = Date.now();
-      const stuckTooLong = speechSynthesis.speaking && (now - lastSpeakAt > 5000);
+      const stuckTooLong = speechSynthesis.speaking && (now - lastSpeakAt > 5500);
       if (stuckTooLong) {
         KWSR.warn?.("TTS parecía colgado, cancel()");
         hardResetTTS();
+        // lo tratamos como “fallo” para que el pipeline no se quede esperando
+        markTTSBroken("stuck_speaking_timeout");
       }
     } catch {}
   }
@@ -115,10 +143,8 @@
     // Anti-freeze
     maybeUnstickTTS();
 
-    // Dedupe global (burst/cooldown)
-    const now = Date.now();
-
-    // Si estamos “en cooldown” por error de TTS, igual permitimos lectura (pero vía lector)
+    // (El gating por video pausado lo maneja pipeline/track/visual.
+    // Acá solo evitamos que el motor se muera.)
     return true;
   }
 
@@ -126,17 +152,14 @@
     try { KWSR.overlay?.updateOverlayText?.(text); } catch {}
   }
 
-  function dedupe(text) {
-    const t = normalize(text);
+  function dedupe(raw) {
+    const t = normalize(raw);
     if (!t) return "";
 
     const now = Date.now();
     const same = (t === S.lastEmitText);
 
-    // burst: si llega el mismo texto en ráfaga, ignorar
     if (same && (now - (S.lastEmitAt || 0) < (CFG.burstMs || 300))) return "";
-
-    // cooldown: si es el mismo texto repetido, ignorar un rato
     if (same && (now - (S.lastEmitAt || 0) < (CFG.cooldownMs || 800))) return "";
 
     S.lastEmitText = t;
@@ -145,32 +168,61 @@
   }
 
   function speakTTS(text) {
-    if (!isTTSAvailable()) throw new Error("speechSynthesis no disponible");
+    if (!isTTSAvailable()) {
+      markTTSBroken("speechSynthesis_not_available");
+      return false;
+    }
 
-    // Si el motor está en mala racha, cortamos y tiramos fallback
     const now = Date.now();
-    if (now < ttsBrokenUntil) throw new Error("TTS en cooldown por error previo");
+    if (now < ttsBrokenUntil) return false;
 
-    const u = new SpeechSynthesisUtterance(text);
-    if (S.voiceES) u.voice = S.voiceES;
-    u.lang = (S.voiceES?.lang) || "es-ES";
-    u.rate = 1;
-    u.pitch = 1;
-    u.volume = 1;
+    // Cargar voz (best effort)
+    cargarVozES();
 
-    u.onstart = () => { lastSpeakAt = Date.now(); };
-    u.onend = () => { /* ok */ };
-    u.onerror = (ev) => {
-      const msg = String(ev?.error || ev?.message || "unknown");
-      lastTtsError = msg;
-      throw new Error(msg);
-    };
+    try {
+      clearWatchdog();
 
-    // IMPORTANT: cancel antes de speak evita colas infinitas
-    try { speechSynthesis.cancel?.(); } catch {}
-    speechSynthesis.speak(u);
+      // Cancel antes de hablar para evitar cola infinita (Chrome)
+      try { speechSynthesis.cancel?.(); } catch {}
 
-    lastSpeakAt = Date.now();
+      const u = new SpeechSynthesisUtterance(text);
+      if (S.voiceES) u.voice = S.voiceES;
+      u.lang = (S.voiceES?.lang) || "es-ES";
+      u.rate = 1;
+      u.pitch = 1;
+      u.volume = 1;
+
+      let finished = false;
+
+      u.onstart = () => {
+        lastSpeakAt = Date.now();
+      };
+
+      u.onend = () => {
+        finished = true;
+        clearWatchdog();
+      };
+
+      u.onerror = (ev) => {
+        finished = true;
+        clearWatchdog();
+        const msg = String(ev?.error || ev?.message || "tts_error");
+        markTTSBroken(msg);
+      };
+
+      // Watchdog: si Chrome no dispara end/error, lo reseteamos nosotros
+      watchdogTimer = setTimeout(() => {
+        if (finished) return;
+        markTTSBroken("watchdog_no_end_no_error");
+      }, Math.max(2500, (CFG.ttsWatchdogMs || 4500)));
+
+      speechSynthesis.speak(u);
+      lastSpeakAt = Date.now();
+      return true;
+    } catch (e) {
+      markTTSBroken(String(e?.message || e));
+      return false;
+    }
   }
 
   function leerTextoAccesible(raw) {
@@ -179,46 +231,27 @@
     const text = dedupe(raw);
     if (!text) return;
 
-    // Siempre reflejar en overlay, aunque la voz falle
+    // Siempre reflejar en overlay
     emitToOverlay(text);
 
-    // Si el modo es "lector", ni intentamos TTS
+    // Lector: live region directo
     if (S.modoNarradorGlobal === "lector") {
       writeLiveRegion(text);
       return;
     }
 
-    // Si el modo es "sintetizador", intentamos TTS; si falla, fallback a lector
-    try {
-      speakTTS(text);
-    } catch (e) {
-      const msg = String(e?.message || e || "");
-      KWSR.warn?.("TTS error", { msg, lastTtsError });
-
-      // Marcamos TTS como roto por un ratito para no spamear errores
-      ttsBrokenUntil = Date.now() + 4000;
-
-      // Fallback automático: lector (live region)
-      // (Mantiene el proyecto usable incluso si el TTS de Chrome se rompe en ese sitio)
-      S.modoNarradorGlobal = "lector";
-      try { KWSR.api?.storage?.local?.set?.({ modoNarrador: "lector" }); } catch {}
-
+    // Sintetizador: intentar TTS, si falla -> fallback a live region (sin depender de throw)
+    const ok = speakTTS(text);
+    if (!ok) {
+      // No insistimos con TTS, pero nunca dejamos de leer
       writeLiveRegion(text);
-      try { KWSR.toast?.notify?.("⚠️ Falló la voz. Pasé a modo Lector automáticamente."); } catch {}
-
-      // Reset duro por las dudas
-      hardResetTTS();
-      try { KWSR.overlay?.updateOverlayStatus?.(); } catch {}
     }
   }
 
   function detenerLectura() {
-    try {
-      hardResetTTS();
-    } catch {}
-    try {
-      if (S.liveRegion) S.liveRegion.textContent = "";
-    } catch {}
+    try { clearWatchdog(); } catch {}
+    try { hardResetTTS(); } catch {}
+    try { if (S.liveRegion) S.liveRegion.textContent = ""; } catch {}
   }
 
   KWSR.voice = {
@@ -227,5 +260,4 @@
     leerTextoAccesible,
     detenerLectura
   };
-
 })();

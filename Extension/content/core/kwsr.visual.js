@@ -6,6 +6,8 @@
 // FIX (Disney+):
 // - Prioriza ".hive-subtitle-renderer-line"
 // - Lee múltiples líneas (join) en vez de 1 solo nodo
+// - NO guarda referencias a spans (Disney los reemplaza) -> re-query por selector
+// - Ordena líneas por posición visual (top/left) para mantener frases coherentes
 // - Guarda selector usado para debug
 // ====================================================
 
@@ -15,6 +17,15 @@
 
   const S = KWSR.state;
   const { normalize } = KWSR.utils;
+
+  // Anti-spam de logs (solo debug)
+  let lastDebugAt = 0;
+  function debugLog(tag, payload) {
+    const now = Date.now();
+    if (now - lastDebugAt < 900) return;
+    lastDebugAt = now;
+    KWSR.log?.(tag, payload);
+  }
 
   function looksLikeNoise(node, text) {
     const t = normalize(text);
@@ -33,78 +44,74 @@
   }
 
   function ensureDisneySelectorsFirst(selectors) {
-    // Si estamos en Disney, ponemos el selector ganador al principio.
     const p = KWSR.platforms?.getPlatform?.() || "generic";
-    if (p !== "disney") return selectors;
+    if (p !== "disney") return selectors || [];
 
+    // Disney: el ganador real que viste en DevTools
     const must = [".hive-subtitle-renderer-line"];
-    const out = [];
 
+    const out = [];
     for (const m of must) if (!out.includes(m)) out.push(m);
     for (const s of (selectors || [])) if (!out.includes(s)) out.push(s);
-
     return out;
   }
 
-  function queryAllForSelectors(selectors) {
-    const nodes = [];
-    for (const sel of (selectors || [])) {
-      try {
-        document.querySelectorAll(sel).forEach(n => nodes.push(n));
-      } catch {}
-    }
-    return nodes;
+  function queryNodes(sel) {
+    try { return Array.from(document.querySelectorAll(sel)); } catch { return []; }
   }
 
-  function readVisualTextFromNodes(nodes) {
-    // Lee todas las líneas relevantes y arma un bloque estable.
-    if (!nodes?.length) return "";
+  function sortByVisualPosition(nodes) {
+    // Ordena por top, luego left (para leer de arriba hacia abajo)
+    try {
+      return nodes
+        .map(n => {
+          const r = n.getBoundingClientRect?.();
+          return { n, top: r?.top ?? 0, left: r?.left ?? 0 };
+        })
+        .sort((a, b) => (a.top - b.top) || (a.left - b.left))
+        .map(x => x.n);
+    } catch {
+      return nodes;
+    }
+  }
 
-    // Filtramos ruido y juntamos
+  function readVisualTextFromSelector(sel) {
+    if (!sel) return "";
+
+    let nodes = queryNodes(sel);
+    if (!nodes.length) return "";
+
+    // Flow/theoplayer: heurística histórica (dejarlo)
+    const theoTTML = nodes.find(n => (n.className || "").toString().includes("theoplayer-ttml-texttrack-"));
+    if (theoTTML) nodes = [theoTTML];
+
+    // Orden estable (importante para Disney multi-line)
+    nodes = sortByVisualPosition(nodes);
+
     const parts = [];
+    const seen = new Set();
+
     for (const n of nodes) {
       const t = normalize(n?.textContent);
       if (!t) continue;
       if (looksLikeNoise(n, t)) continue;
+
+      if (seen.has(t)) continue;
+      seen.add(t);
       parts.push(t);
     }
 
-    // Dedup simple dentro del mismo tick
-    const uniq = [];
-    const seen = new Set();
-    for (const p of parts) {
-      if (seen.has(p)) continue;
-      seen.add(p);
-      uniq.push(p);
-    }
-
-    return normalize(uniq.join(" "));
+    // Join con espacio; normalize final para limpiar duplicados de whitespace
+    return normalize(parts.join(" "));
   }
 
-  function pickBestVisualSet() {
-    const selectorsRaw = S.visualSelectors || [];
-    const selectors = ensureDisneySelectorsFirst(selectorsRaw);
-
+  function pickBestVisualSelector() {
+    const selectors = ensureDisneySelectorsFirst(S.visualSelectors || []);
     for (const sel of selectors) {
-      let nodes = [];
-      try { nodes = Array.from(document.querySelectorAll(sel)); } catch { nodes = []; }
-
-      if (!nodes.length) continue;
-
-      // Caso Flow/theoplayer: preferencia histórica
-      const theoTTML = nodes.find(n => (n.className || "").toString().includes("theoplayer-ttml-texttrack-"));
-      if (theoTTML) {
-        return { selector: sel, nodes: [theoTTML] };
-      }
-
-      // Caso Disney: muchas líneas (spans)
-      const text = readVisualTextFromNodes(nodes);
-      if (text) return { selector: sel, nodes };
-
-      // Si no hay texto útil, probamos otro selector.
+      const t = readVisualTextFromSelector(sel);
+      if (t) return sel;
     }
-
-    return { selector: "", nodes: [] };
+    return "";
   }
 
   function stopVisualObserver() {
@@ -118,40 +125,41 @@
     S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
     S.visualSelectors = ensureDisneySelectorsFirst(S.visualSelectors);
 
-    const picked = pickBestVisualSet();
-    S.visualSelectorUsed = picked.selector || "";
-    S.visualNodes = picked.nodes || [];
+    // Elegimos SOLO el selector ganador (no guardamos nodos)
+    S.visualSelectorUsed = pickBestVisualSelector() || "";
 
     stopVisualObserver();
 
-    if (S.visualNodes?.length) {
+    if (S.visualSelectorUsed) {
       try {
         S.visualObserver = new MutationObserver(() => {
           if (!KWSR.voice.shouldReadNow()) return;
           if (S.effectiveFuente !== "visual") return;
 
-          const t = readVisualTextFromNodes(S.visualNodes);
+          const t = readVisualTextFromSelector(S.visualSelectorUsed);
           if (!t) return;
 
           if (t === S.lastVisualSeen) return;
           S.lastVisualSeen = t;
 
-          // Log suave (no spamear)
-          KWSR.log?.("VISUAL", {
+          debugLog("VISUAL", {
             sel: S.visualSelectorUsed,
-            nodes: S.visualNodes.length,
-            text: t.slice(0, 120)
+            text: t.slice(0, 140)
           });
 
           KWSR.voice.leerTextoAccesible(t);
         });
 
-        // Observamos el parent común si existe; si no, observamos cada nodo
-        // (Disney suele mutar nodos internos)
-        const first = S.visualNodes[0];
-        const root = first?.parentElement || first;
+        // Observamos un root estable:
+        // - Si el selector es hive line, el parent suele existir pero puede variar.
+        //   Observamos documentElement para no perder recambios de nodos.
+        // (Sí, es más caro, pero lo mitigamos con dedupe + throttled log)
+        S.visualObserver.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          characterData: true
+        });
 
-        S.visualObserver.observe(root, { childList: true, subtree: true, characterData: true });
         S.visualObserverActive = true;
       } catch {
         S.visualObserverActive = false;
@@ -173,28 +181,25 @@
       S.visualSelectors = ensureDisneySelectorsFirst(S.visualSelectors);
     }
 
-    // Si no tenemos set, buscamos
-    if (!S.visualNodes || !S.visualNodes.length) {
-      const picked = pickBestVisualSet();
-      S.visualSelectorUsed = picked.selector || "";
-      S.visualNodes = picked.nodes || [];
-      if (S.visualNodes.length) startVisual();
+    // Si no tenemos selector ganador, lo buscamos
+    if (!S.visualSelectorUsed) {
+      S.visualSelectorUsed = pickBestVisualSelector() || "";
+      if (S.visualSelectorUsed) startVisual();
       return;
     }
 
     // Si observer está activo, poll no hace falta
     if (S.visualObserverActive) return;
 
-    const t = readVisualTextFromNodes(S.visualNodes);
+    const t = readVisualTextFromSelector(S.visualSelectorUsed);
     if (!t) return;
 
     if (t === S.lastVisualSeen) return;
     S.lastVisualSeen = t;
 
-    KWSR.log?.("VISUAL(poll)", {
+    debugLog("VISUAL(poll)", {
       sel: S.visualSelectorUsed,
-      nodes: S.visualNodes.length,
-      text: t.slice(0, 120)
+      text: t.slice(0, 140)
     });
 
     KWSR.voice.leerTextoAccesible(t);
@@ -208,16 +213,11 @@
     }
 
     const prevSel = S.visualSelectorUsed || "";
-    const prevCount = S.visualNodes?.length || 0;
+    const nextSel = pickBestVisualSelector() || "";
 
-    const picked = pickBestVisualSet();
-    const nextSel = picked.selector || "";
-    const nextCount = picked.nodes?.length || 0;
-
-    // Rehook si cambió algo relevante (selector o cantidad de nodos)
-    if ((nextSel && nextSel !== prevSel) || (nextCount && nextCount !== prevCount)) {
+    // Rehook si cambió el selector ganador (ej: Disney cambia layout)
+    if (nextSel && nextSel !== prevSel) {
       S.visualSelectorUsed = nextSel;
-      S.visualNodes = picked.nodes || [];
       startVisual();
     }
   }
@@ -229,5 +229,4 @@
     pollVisualTick,
     visualReselectTick
   };
-
 })();
