@@ -4,8 +4,11 @@
 // - MutationObserver + polling fallback + reselection
 //
 // FIX (Disney+):
-// - Modo estricto: si existen ".hive-subtitle-renderer-line", NO usar fallbacks genéricos
-// - Anti-UI: ignora menús/drawers/dialogs y listas tipo "Subtítulos disponibles: ..."
+// - Lock fuerte a ".hive-subtitle-renderer-line" cuando aparece
+// - Lee múltiples líneas (join) en vez de 1 solo nodo
+// - Bloquea lecturas cuando hay drawer/dialog abierto (Audio/Subtítulos)
+// - Filtro por contenido para evitar “salchicha de idiomas”
+// - Guarda selector usado para debug
 // ====================================================
 
 (() => {
@@ -19,86 +22,91 @@
     return KWSR.platforms?.getPlatform?.() || "generic";
   }
 
-  function isInsideUiChrome(node) {
-    // Si el texto está dentro de un menú/drawer/dialog, casi seguro NO es subtítulo “del video”.
-    try {
-      const el = node?.nodeType === 1 ? node : node?.parentElement;
-      if (!el?.closest) return false;
-
-      return !!el.closest(
-        [
-          "[role='dialog']",
-          "[role='menu']",
-          "[role='listbox']",
-          "[role='navigation']",
-          "[aria-modal='true']",
-          "[class*='drawer']",
-          "[class*='Drawer']",
-          "[class*='modal']",
-          "[class*='Modal']",
-          "[class*='menu']",
-          "[class*='Menu']",
-          "[class*='settings']",
-          "[class*='Settings']"
-        ].join(",")
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  function looksLikeCaptionOptionsText(text) {
-    const t = normalize(text).toLowerCase();
-    if (!t) return false;
-
-    // Frases típicas de UI de audio/subs
-    if (t.includes("subtítulos disponibles") || t.includes("subtitulos disponibles")) return true;
-    if (t.includes("audio y subtítulos") || t.includes("audio y subtitulos")) return true;
-
-    // Listas de idiomas frecuentes
-    // (ej: "español, español latinoamérica, english, ...")
-    const hasLanguages =
-      t.includes("español") || t.includes("latino") || t.includes("english") || t.includes("portugu") || t.includes("français") || t.includes("francais");
-
-    const looksLikeList = (t.includes(",") || t.includes("·") || t.includes("|")) && t.length > 25;
-
-    // Formato "X: Y, Z, W"
-    const looksLikeColonList = t.includes(":") && looksLikeList;
-
-    return hasLanguages && (looksLikeList || looksLikeColonList);
-  }
-
   function looksLikeNoise(node, text) {
     const t = normalize(text);
     if (!t) return true;
 
-    if (isInsideUiChrome(node)) return true;
-    if (looksLikeCaptionOptionsText(t)) return true;
+    // 🚫 anti “menú de idiomas” (Disney drawer)
+    if (looksLikeLanguageMenuBlob(t)) return true;
 
     const tag = (node?.tagName || "").toUpperCase();
     if (["H1","H2","H3","H4","H5","H6","HEADER","NAV","MAIN","ARTICLE","ASIDE","FOOTER"].includes(tag)) return true;
     if (["A","BUTTON","INPUT","TEXTAREA","SELECT","LABEL"].includes(tag)) return true;
 
-    // Un toque más permisivo para Disney (a veces son 2 líneas largas)
+    // captions suelen ser cortos/medios; UI blobs gigantes => afuera
     if (t.length < 2 || t.length > 420) return true;
 
     const cls = ((node?.className || "") + " " + (node?.id || "")).toLowerCase();
-    if (/toast|snack|tooltip|popover|notif|banner|sr-only|screenreader-only/.test(cls)) return true;
+    if (/toast|snack|tooltip|popover|modal|dialog|notif|banner|sr-only|screenreader-only/.test(cls)) return true;
+
+    return false;
+  }
+
+  function hasOpenDialogMenu() {
+    // Si hay un drawer/dialog visible, casi seguro está mutando UI, no subs.
+    try {
+      const el = document.querySelector(
+        "[role='dialog'],[aria-modal='true'],[class*='drawer'],[class*='Drawer'],[class*='modal'],[class*='Modal']"
+      );
+      if (!el) return false;
+      const cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity || 1) < 0.05) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function looksLikeLanguageMenuBlob(text) {
+    const t = normalize(text);
+    if (!t) return false;
+
+    const lower = t.toLowerCase();
+
+    const hasAudioSubs =
+      lower.includes("audio") &&
+      (lower.includes("subtítulos") || lower.includes("subtitulos") || lower.includes("subtitles"));
+
+    if (!hasAudioSubs) return false;
+
+    const langHits = [
+      "english","deutsch","español","espanol","français","francais","italiano","português","portugues",
+      "polski","magyar","dansk","norsk","svenska","suomi","türkçe","turkce","čeština","cestina",
+      "română","romana","slovenčina","slovencina","nederlands","ελληνικά","日本語","한국어","chinese"
+    ].reduce((acc, w) => acc + (lower.includes(w) ? 1 : 0), 0);
+
+    if (langHits >= 4) return true;
+
+    if (t.length > 180 && (lower.includes("[cc]") || /\bcc\b/.test(lower))) return true;
+
+    // Muy largo = UI
+    if (t.length > 240) return true;
 
     return false;
   }
 
   function ensureDisneySelectorsFirst(selectors) {
-    const p = platform();
-    if (p !== "disney") return selectors;
+    if (platform() !== "disney") return selectors || [];
 
-    const must = [".hive-subtitle-renderer-line", "[class*='hive-subtitle']"];
+    const must = [
+      ".hive-subtitle-renderer-line",
+      "[class*='hive-subtitle']"
+    ];
+
     const out = [];
-
     for (const m of must) if (!out.includes(m)) out.push(m);
     for (const s of (selectors || [])) if (!out.includes(s)) out.push(s);
-
     return out;
+  }
+
+  function queryAllForSelectors(selectors) {
+    const nodes = [];
+    for (const sel of (selectors || [])) {
+      try {
+        document.querySelectorAll(sel).forEach(n => nodes.push(n));
+      } catch {}
+    }
+    return nodes;
   }
 
   function readVisualTextFromNodes(nodes) {
@@ -112,7 +120,7 @@
       parts.push(t);
     }
 
-    // dedupe simple
+    // Dedup dentro del mismo tick
     const uniq = [];
     const seen = new Set();
     for (const p of parts) {
@@ -124,38 +132,36 @@
     return normalize(uniq.join(" "));
   }
 
+  // -------------------- Disney lock --------------------
+  function disneyPreferredNodesNow() {
+    // “Lock target”: siempre intentamos hive-lines primero (si existen).
+    if (platform() !== "disney") return null;
+
+    try {
+      const hive = Array.from(document.querySelectorAll(".hive-subtitle-renderer-line"));
+      const txt = readVisualTextFromNodes(hive);
+      if (hive.length && txt) {
+        return { selector: ".hive-subtitle-renderer-line", nodes: hive, text: txt };
+      }
+    } catch {}
+    return null;
+  }
+
   function pickBestVisualSet() {
-    const p = platform();
+    // 1) Disney: si hay hive-lines, lock inmediato
+    const disneyLock = disneyPreferredNodesNow();
+    if (disneyLock) return { selector: disneyLock.selector, nodes: disneyLock.nodes };
+
+    // 2) General: probamos selectors en orden
     const selectorsRaw = S.visualSelectors || [];
     const selectors = ensureDisneySelectorsFirst(selectorsRaw);
-
-    // ✅ DISNEY STRICT MODE:
-    // Si hay hive lines, NO seguimos probando fallbacks genéricos.
-    if (p === "disney") {
-      // 1) hive-subtitle-renderer-line
-      try {
-        const nodes = Array.from(document.querySelectorAll(".hive-subtitle-renderer-line"));
-        const text = readVisualTextFromNodes(nodes);
-        if (text) return { selector: ".hive-subtitle-renderer-line", nodes };
-      } catch {}
-
-      // 2) hive wrapper fallback
-      try {
-        const nodes = Array.from(document.querySelectorAll("[class*='hive-subtitle']"));
-        const text = readVisualTextFromNodes(nodes);
-        if (text) return { selector: "[class*='hive-subtitle']", nodes };
-      } catch {}
-
-      // Si no hay nada, recién ahí dejamos que siga con el resto
-      // (pero lo ideal es que en Disney siempre aparezcan esas líneas cuando hay subs)
-    }
 
     for (const sel of selectors) {
       let nodes = [];
       try { nodes = Array.from(document.querySelectorAll(sel)); } catch { nodes = []; }
       if (!nodes.length) continue;
 
-      // Flow/theoplayer preferencia histórica
+      // Preferencia histórica: Theoplayer TTML (Flow)
       const theoTTML = nodes.find(n => (n.className || "").toString().includes("theoplayer-ttml-texttrack-"));
       if (theoTTML) return { selector: sel, nodes: [theoTTML] };
 
@@ -172,12 +178,28 @@
     S.visualObserverActive = false;
   }
 
+  function observeRootFor(nodes) {
+    // Observamos un parent común para capturar cambios internos (Disney muta mucho)
+    const first = nodes?.[0];
+    if (!first) return null;
+
+    // Si todas las nodes comparten parentElement, mejor ese.
+    try {
+      const p = first.parentElement;
+      if (p) return p;
+    } catch {}
+
+    return first;
+  }
+
   function startVisual() {
     const p = platform();
     S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
     S.visualSelectors = ensureDisneySelectorsFirst(S.visualSelectors);
 
+    // Si ya está lockeado en Disney, mantenelo salvo que esté “vacío”
     const picked = pickBestVisualSet();
+
     S.visualSelectorUsed = picked.selector || "";
     S.visualNodes = picked.nodes || [];
 
@@ -185,27 +207,59 @@
 
     if (S.visualNodes?.length) {
       try {
+        const obsRoot = observeRootFor(S.visualNodes);
+
         S.visualObserver = new MutationObserver(() => {
           if (!KWSR.voice.shouldReadNow()) return;
           if (S.effectiveFuente !== "visual") return;
 
+          // Disney: si el drawer está abierto, NO leer UI
+          if (p === "disney" && hasOpenDialogMenu()) return;
+
+          // Disney: si aparece hive-lines ahora, cambiamos lock en caliente
+          if (p === "disney") {
+            const lockNow = disneyPreferredNodesNow();
+            if (lockNow && S.visualSelectorUsed !== lockNow.selector) {
+              S.visualSelectorUsed = lockNow.selector;
+              S.visualNodes = lockNow.nodes;
+              // rehook observer al nuevo root
+              startVisual();
+              return;
+            }
+          }
+
           const t = readVisualTextFromNodes(S.visualNodes);
           if (!t) return;
-          if (t === S.lastVisualSeen) return;
 
+          if (t === S.lastVisualSeen) return;
           S.lastVisualSeen = t;
+
+          KWSR.log?.("VISUAL", {
+            sel: S.visualSelectorUsed,
+            nodes: S.visualNodes.length,
+            text: t.slice(0, 120)
+          });
+
           KWSR.voice.leerTextoAccesible(t);
         });
 
-        const first = S.visualNodes[0];
-        const root = first?.parentElement || first;
-        S.visualObserver.observe(root, { childList: true, subtree: true, characterData: true });
-        S.visualObserverActive = true;
+        if (obsRoot) {
+          S.visualObserver.observe(obsRoot, { childList: true, subtree: true, characterData: true });
+          S.visualObserverActive = true;
+        } else {
+          S.visualObserverActive = false;
+        }
       } catch {
         S.visualObserverActive = false;
       }
     } else {
       S.visualObserverActive = false;
+    }
+
+    // Disney lock bookkeeping
+    if (p === "disney") {
+      S.visualDisneyLock = (S.visualSelectorUsed === ".hive-subtitle-renderer-line");
+      if (S.visualDisneyLock) S.visualDisneyLockSeenAt = Date.now();
     }
 
     KWSR.overlay?.updateOverlayStatus?.();
@@ -215,12 +269,31 @@
     if (!KWSR.voice.shouldReadNow()) return;
     if (S.effectiveFuente !== "visual") return;
 
+    const p = platform();
+
+    // Disney: si el drawer está abierto, ignoramos
+    if (p === "disney" && hasOpenDialogMenu()) return;
+
     if (!S.visualSelectors) {
-      const p = platform();
       S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
       S.visualSelectors = ensureDisneySelectorsFirst(S.visualSelectors);
     }
 
+    // Disney: lock en cada poll si hive-lines están disponibles
+    if (p === "disney") {
+      const lockNow = disneyPreferredNodesNow();
+      if (lockNow) {
+        // Si no estamos lockeados, lockeamos
+        if (S.visualSelectorUsed !== lockNow.selector) {
+          S.visualSelectorUsed = lockNow.selector;
+          S.visualNodes = lockNow.nodes;
+          startVisual();
+          return;
+        }
+      }
+    }
+
+    // Si no tenemos set, buscamos
     if (!S.visualNodes || !S.visualNodes.length) {
       const picked = pickBestVisualSet();
       S.visualSelectorUsed = picked.selector || "";
@@ -229,21 +302,51 @@
       return;
     }
 
+    // Si observer está activo, poll no hace falta
     if (S.visualObserverActive) return;
 
     const t = readVisualTextFromNodes(S.visualNodes);
     if (!t) return;
-    if (t === S.lastVisualSeen) return;
 
+    if (t === S.lastVisualSeen) return;
     S.lastVisualSeen = t;
+
+    KWSR.log?.("VISUAL(poll)", {
+      sel: S.visualSelectorUsed,
+      nodes: S.visualNodes.length,
+      text: t.slice(0, 120)
+    });
+
     KWSR.voice.leerTextoAccesible(t);
   }
 
   function visualReselectTick() {
+    const p = platform();
+
     if (!S.visualSelectors) {
-      const p = platform();
       S.visualSelectors = KWSR.platforms?.platformSelectors?.(p) || [];
       S.visualSelectors = ensureDisneySelectorsFirst(S.visualSelectors);
+    }
+
+    // Disney: si estamos lockeados, NO reseleccionamos salvo que “desaparezca” por un rato.
+    if (p === "disney") {
+      const lockNow = disneyPreferredNodesNow();
+      if (lockNow) {
+        // lock vivo => mantenemos
+        if (S.visualSelectorUsed !== lockNow.selector) {
+          S.visualSelectorUsed = lockNow.selector;
+          S.visualNodes = lockNow.nodes;
+          startVisual();
+        }
+        return;
+      }
+
+      // Si no hay lockNow, esperamos un ratito antes de abandonar el lock anterior
+      const lockWas = (S.visualSelectorUsed === ".hive-subtitle-renderer-line");
+      if (lockWas) {
+        const since = Date.now() - (S.visualDisneyLockSeenAt || 0);
+        if (since < 1500) return; // tolerancia
+      }
     }
 
     const prevSel = S.visualSelectorUsed || "";
@@ -261,9 +364,11 @@
   }
 
   KWSR.visual = {
+    looksLikeNoise,
     startVisual,
     stopVisualObserver,
     pollVisualTick,
     visualReselectTick
   };
+
 })();
