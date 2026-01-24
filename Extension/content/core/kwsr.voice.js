@@ -3,6 +3,10 @@
 // - Voice engine (TTS + "lector" via liveRegion)
 // - FIX: manejo real de errores async (no throw en onerror)
 // - Anti-freeze watchdog + fallback a live region
+// - FIX (2026-01): Anti-eco + dedupe robusto (Netflix/Max repite 2-3 veces)
+//   * fingerprint fuerte (trim/lower/whitespace/zero-width)
+//   * ventana "echoMs" corta para duplicados inmediatos
+//   * cooldown dinámico por longitud para re-render pesado
 // ====================================================
 
 (() => {
@@ -130,7 +134,6 @@
       if (stuckTooLong) {
         KWSR.warn?.("TTS parecía colgado, cancel()");
         hardResetTTS();
-        // lo tratamos como “fallo” para que el pipeline no se quede esperando
         markTTSBroken("stuck_speaking_timeout");
       }
     } catch {}
@@ -140,11 +143,7 @@
     if (!S.extensionActiva) return false;
     if (!S.modoNarradorGlobal || S.modoNarradorGlobal === "off") return false;
 
-    // Anti-freeze
     maybeUnstickTTS();
-
-    // (El gating por video pausado lo maneja pipeline/track/visual.
-    // Acá solo evitamos que el motor se muera.)
     return true;
   }
 
@@ -152,19 +151,43 @@
     try { KWSR.overlay?.updateOverlayText?.(text); } catch {}
   }
 
+  // -------------------- Dedupe robusto (anti-eco) --------------------
+  function fingerprint(text) {
+    return normalize(text)
+      .replace(/\u00A0/g, " ")                 // nbsp -> space
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")   // zero-width chars
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
   function dedupe(raw) {
-    const t = normalize(raw);
-    if (!t) return "";
+    const clean = normalize(raw);
+    if (!clean) return "";
+
+    const key = fingerprint(clean);
+    if (!key) return "";
 
     const now = Date.now();
-    const same = (t === S.lastEmitText);
 
-    if (same && (now - (S.lastEmitAt || 0) < (CFG.burstMs || 300))) return "";
-    if (same && (now - (S.lastEmitAt || 0) < (CFG.cooldownMs || 800))) return "";
+    const dt = now - (S.lastEmitAt || 0);
+    const sameKey = (key === (S.lastEmitKey || ""));
 
-    S.lastEmitText = t;
+    // 1) Anti-eco inmediato (corta el “lo dijo 2 veces”)
+    const echoMs = (CFG.echoMs ?? 320);
+    if (sameKey && dt < echoMs) return "";
+
+    // 2) Cooldown normal (anti re-render pesado)
+    const base = (CFG.cooldownMs ?? 900);
+    const extra = Math.min(1400, key.length * 18);
+    const windowMs = base + extra;
+
+    if (sameKey && dt < windowMs) return "";
+
+    S.lastEmitKey = key;
     S.lastEmitAt = now;
-    return t;
+    S.lastEmitText = clean;
+    return clean;
   }
 
   function speakTTS(text) {
@@ -176,11 +199,16 @@
     const now = Date.now();
     if (now < ttsBrokenUntil) return false;
 
-    // Cargar voz (best effort)
     cargarVozES();
 
     try {
       clearWatchdog();
+
+      // Extra anti-eco TTS (por si algo se coló): si íbamos a decir lo mismo demasiado pegado, no cancelamos ni re-hablamos
+      const tKey = fingerprint(text);
+      if (tKey && (tKey === (S.lastSpokenKey || "")) && (now - (S.lastSpokenAt || 0) < (CFG.ttsEchoMs ?? 350))) {
+        return true;
+      }
 
       // Cancel antes de hablar para evitar cola infinita (Chrome)
       try { speechSynthesis.cancel?.(); } catch {}
@@ -196,6 +224,9 @@
 
       u.onstart = () => {
         lastSpeakAt = Date.now();
+        // Registramos “lo que se empezó a hablar” (no antes)
+        S.lastSpokenKey = tKey || "";
+        S.lastSpokenAt = Date.now();
       };
 
       u.onend = () => {
@@ -210,7 +241,6 @@
         markTTSBroken(msg);
       };
 
-      // Watchdog: si Chrome no dispara end/error, lo reseteamos nosotros
       watchdogTimer = setTimeout(() => {
         if (finished) return;
         markTTSBroken("watchdog_no_end_no_error");
@@ -231,21 +261,15 @@
     const text = dedupe(raw);
     if (!text) return;
 
-    // Siempre reflejar en overlay
     emitToOverlay(text);
 
-    // Lector: live region directo
     if (S.modoNarradorGlobal === "lector") {
       writeLiveRegion(text);
       return;
     }
 
-    // Sintetizador: intentar TTS, si falla -> fallback a live region (sin depender de throw)
     const ok = speakTTS(text);
-    if (!ok) {
-      // No insistimos con TTS, pero nunca dejamos de leer
-      writeLiveRegion(text);
-    }
+    if (!ok) writeLiveRegion(text);
   }
 
   function detenerLectura() {
