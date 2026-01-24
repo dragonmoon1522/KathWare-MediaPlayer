@@ -1,6 +1,10 @@
 // ====================================================
 // KathWare SubtitleReader - kwsr.track.js
 // - TRACK engine: lee video.textTracks (oncuechange + polling fallback)
+//
+// FIX:
+// - Evita “tracks fantasma” que hacen que AUTO elija TRACK sin cues reales
+// - Priorización mejor en pickBestTrack()
 // ====================================================
 
 (() => {
@@ -20,21 +24,28 @@
     }
   }
 
+  function hasCues(track) {
+    try {
+      const len = track?.cues ? track.cues.length : 0;
+      return len > 0;
+    } catch {
+      return false;
+    }
+  }
+
   function trackSeemsUsable(track) {
     if (!track) return false;
 
     // Intento: habilitar lectura sin “mostrar” visualmente (hidden)
     try { if (track.mode === "disabled") track.mode = "hidden"; } catch {}
 
-    try {
-      const txt = readActiveCues(track);
-      if (txt) return true;
+    // 1) Si ya hay activeCues con texto -> usable
+    const now = readActiveCues(track);
+    if (now) return true;
 
-      const len = track.cues ? track.cues.length : 0;
-      if (len > 0) return true;
-    } catch {
-      return false;
-    }
+    // 2) Si hay cues pero track nunca va a activar (algunas plataformas dejan cues vacíos/raros)
+    //    Igual lo consideramos usable PERO con prioridad menor (pickBestTrack)
+    if (hasCues(track)) return true;
 
     return false;
   }
@@ -42,23 +53,50 @@
   function videoHasUsableTracks(video) {
     const list = Array.from(video?.textTracks || []);
     if (!list.length) return false;
+
+    // Importante: no queremos que "tenga tracks" implique usable.
+    // Debe haber al menos uno que parezca usable.
     return list.some(trackSeemsUsable);
+  }
+
+  function scoreTrack(t) {
+    // Score simple para elegir mejor:
+    // showing > hidden > disabled
+    // cues > sin cues
+    // label/lang presentes suman un poquito
+    let s = 0;
+    const mode = (t?.mode || "").toLowerCase();
+    if (mode === "showing") s += 50;
+    else if (mode === "hidden") s += 30;
+    else if (mode === "disabled") s += 0;
+
+    if (hasCues(t)) s += 20;
+
+    const hasMeta = !!(t?.label || t?.language);
+    if (hasMeta) s += 5;
+
+    // Si tiene activeCues ahora mismo, es el rey
+    const activeNow = readActiveCues(t);
+    if (activeNow) s += 100;
+
+    return s;
   }
 
   function pickBestTrack(video) {
     const list = Array.from(video?.textTracks || []);
     if (!list.length) return null;
 
+    // 1) Si el índice global apunta a algo usable, lo respetamos
     const idx = clamp(S.trackIndexGlobal, 0, list.length - 1);
+    const byIdx = list[idx];
+    if (byIdx && trackSeemsUsable(byIdx)) return byIdx;
 
-    return (
-      list[idx] ||
-      list.find(t => t.mode === "showing") ||
-      list.find(t => t.mode === "hidden" && t.cues && t.cues.length) ||
-      list.find(t => t.mode === "hidden") ||
-      list[0] ||
-      null
-    );
+    // 2) Si hay alguno usable, elegimos el de mayor score
+    const usable = list.filter(trackSeemsUsable);
+    if (!usable.length) return null;
+
+    usable.sort((a, b) => scoreTrack(b) - scoreTrack(a));
+    return usable[0] || null;
   }
 
   function attachTrack(track) {
@@ -114,7 +152,9 @@
       attachTrack(best);
       KWSR.overlay?.updateOverlayTracksList?.();
       KWSR.overlay?.updateOverlayStatus?.();
-      KWSR.log?.("TRACK activo:", KWSR.overlay?.describeTrack?.(best) || best);
+      KWSR.log?.("TRACK activo:", KWSR.overlay?.describeTrack?.(best) || {
+        label: best.label, lang: best.language, mode: best.mode, cues: best.cues?.length ?? 0
+      });
     }
 
     return true;
@@ -144,17 +184,4 @@
     pollTrackTick
   };
 
-  /*
-  ===========================
-  Cambios aplicados (resumen)
-  ===========================
-  - Rebrand: KWMP -> KWSR.
-  - Se mantiene lógica TRACK (activeCues + oncuechange + poll fallback).
-  - “Usable”: fuerza track.mode a "hidden" si estaba "disabled" para poder leer sin render.
-  - Respeta gating:
-      - solo lee si voice.shouldReadNow()
-      - solo si effectiveFuente === "track"
-      - dedupe por S.lastTrackSeen
-  - Logs/overlay updates quedan iguales, ahora con KWSR.*
-  */
 })();

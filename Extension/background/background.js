@@ -3,21 +3,32 @@
 // - Guarda logs en storage.local[kathLogs] para adjuntar desde el popup
 // - Recibe logs desde content scripts vía runtime.sendMessage({action:"logEvent"})
 // - Hotkey commands: toggle_kathware_subtitlereader
+//
+// FIX:
+// - Evita el error: “A listener indicated an asynchronous response by returning true,
+//   but the message channel closed before a response was received”
+// - Regla: SOLO retornar true si vamos a responder async.
 // ====================================================
 
 const LOG_KEY = "kathLogs";
 const MAX_LOGS = 400;
 
-function pushLog(entry) {
+function pushLog(entry, cb) {
   try {
     chrome.storage.local.get([LOG_KEY], (data) => {
       const arr = Array.isArray(data?.[LOG_KEY]) ? data[LOG_KEY] : [];
       arr.push(entry);
       if (arr.length > MAX_LOGS) arr.splice(0, arr.length - MAX_LOGS);
-      chrome.storage.local.set({ [LOG_KEY]: arr }, () => void chrome.runtime.lastError);
+
+      chrome.storage.local.set({ [LOG_KEY]: arr }, () => {
+        // No tiramos error, pero reportamos si existe.
+        void chrome.runtime.lastError;
+        cb && cb();
+      });
     });
   } catch (e) {
     console.warn("[KathWare] pushLog error:", e);
+    cb && cb();
   }
 }
 
@@ -48,16 +59,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         ...request.payload
       };
 
-      pushLog(entry);
-      sendResponse?.({ status: "ok" });
-      return true;
+      // ✅ Respondemos ASYNC cuando terminó el storage.set
+      pushLog(entry, () => {
+        try { sendResponse({ status: "ok" }); } catch {}
+      });
+
+      return true; // ✅ mantenemos el canal abierto (async)
     }
 
-    sendResponse?.({ status: "ok" });
-    return true;
+    // ✅ Para otros mensajes, respuesta SYNC -> NO retornar true
+    sendResponse({ status: "ok" });
+    return false;
   } catch (e) {
     console.warn("[KathWare] background error:", e);
-    sendResponse?.({ status: "error" });
-    return true;
+
+    // Intentamos responder sync si todavía se puede.
+    try { sendResponse({ status: "error", error: String(e) }); } catch {}
+    return false;
   }
 });

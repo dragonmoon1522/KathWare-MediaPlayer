@@ -2,6 +2,13 @@
 // KathWare SubtitleReader - kwsr.hotkeys.js
 // - Hotkeys in-page (fallback) + mensajes desde background/popup
 // - Entry: KWSR.pipeline.init()
+//
+// FIX:
+// - Blindaje de runtime.onMessage para evitar:
+//   “A listener indicated an asynchronous response by returning true,
+//    but the message channel closed before a response was received”
+// - Regla: solo return true cuando realmente respondemos async,
+//   y SIEMPRE garantizamos sendResponse (con timeout de seguridad).
 // ====================================================
 
 (() => {
@@ -89,46 +96,81 @@
   const api = KWSR.api;
   if (api?.runtime?.onMessage) {
     api.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      let responded = false;
+
+      const safeRespond = (payload) => {
+        if (responded) return;
+        responded = true;
+        try { sendResponse?.(payload); } catch {}
+      };
+
+      // Timeout de seguridad: si por alguna razón el async no vuelve,
+      // respondemos igual para que Chrome no se queje.
+      let safetyTimer = null;
+      const armSafety = () => {
+        try {
+          safetyTimer = setTimeout(() => {
+            safeRespond({ status: "ok", note: "safety-timeout" });
+          }, 1500);
+        } catch {}
+      };
+      const clearSafety = () => {
+        try { if (safetyTimer) clearTimeout(safetyTimer); } catch {}
+        safetyTimer = null;
+      };
+
       try {
-        // ✅ Background command: toggle (renombrado a “toggleExtension”)
+        // ✅ Background command: toggle
         if (message?.action === "toggleExtension") {
           KWSR.log?.("Msg toggleExtension", { from: "background" });
           KWSR.pipeline?.toggleExtension?.();
-          sendResponse?.({ status: "ok" });
+          safeRespond({ status: "ok" });
           return false;
         }
 
-        // ✅ Compat: si quedó algún background viejo usando toggleNarrator
+        // ✅ Compat: background viejo
         if (message?.action === "toggleNarrator") {
           KWSR.warn?.("Msg toggleNarrator (deprecated)", { from: "background" });
           KWSR.pipeline?.toggleExtension?.();
-          sendResponse?.({ status: "ok" });
+          safeRespond({ status: "ok" });
           return false;
         }
 
-        // Popup: update settings
+        // Popup: update settings (async)
         if (message?.action === "updateSettings") {
           KWSR.log?.("Msg updateSettings", { from: "popup" });
 
+          // Armamos safety porque vamos async sí o sí acá
+          armSafety();
+
           if (KWSR.storage?.cargarConfigDesdeStorage) {
             KWSR.storage.cargarConfigDesdeStorage(() => {
-              // Si está OFF no creamos UI, solo guardamos state.
-              if (S.extensionActiva) {
-                KWSR.overlay?.updateOverlayStatus?.();
-                KWSR.overlay?.updateOverlayTracksList?.();
-                KWSR.pipeline?.restartPipeline?.();
+              try {
+                // Si está OFF no creamos UI, solo guardamos state.
+                if (S.extensionActiva) {
+                  KWSR.overlay?.updateOverlayStatus?.();
+                  KWSR.overlay?.updateOverlayTracksList?.();
+                  KWSR.pipeline?.restartPipeline?.();
+                }
+              } catch (e) {
+                KWSR.error?.("updateSettings callback error", e);
+              } finally {
+                clearSafety();
+                safeRespond({ status: "ok" });
               }
-              sendResponse?.({ status: "ok" });
             });
-            return true; // async
+
+            return true; // ✅ async
           }
 
+          // Fallback: sin loader, hacemos lo mínimo y respondemos sync
           if (S.extensionActiva) {
             KWSR.overlay?.updateOverlayStatus?.();
             KWSR.overlay?.updateOverlayTracksList?.();
             KWSR.pipeline?.restartPipeline?.();
           }
-          sendResponse?.({ status: "ok" });
+          clearSafety();
+          safeRespond({ status: "ok" });
           return false;
         }
 
@@ -144,7 +186,7 @@
             KWSR.overlay?.updateOverlayTracksList?.();
             KWSR.overlay?.updateOverlayStatus?.();
           }
-          sendResponse?.({ status: "ok" });
+          safeRespond({ status: "ok" });
           return false;
         }
 
@@ -157,28 +199,28 @@
                 language: t.language || ""
               }))
             : [];
-          sendResponse?.({ tracks });
+          safeRespond({ tracks });
           return false;
         }
 
-        // Popup: toggle overlay panel (si lo necesitás)
+        // Popup: toggle overlay panel
         if (message?.action === "toggleOverlayPanel") {
           if (!S.extensionActiva) {
-            sendResponse?.({ status: "off" });
+            safeRespond({ status: "off" });
             return false;
           }
           KWSR.overlay?.ensureOverlay?.();
           const open = S.overlayPanel && S.overlayPanel.style.display !== "none";
           KWSR.overlay?.setPanelOpen?.(!open);
-          sendResponse?.({ status: "ok" });
+          safeRespond({ status: "ok" });
           return false;
         }
 
-        sendResponse?.({ status: "noop" });
+        safeRespond({ status: "noop" });
         return false;
       } catch (e) {
         KWSR.error?.("onMessage error", e);
-        sendResponse?.({ status: "error", error: String(e?.message || e) });
+        safeRespond({ status: "error", error: String(e?.message || e) });
         return false;
       }
     });
@@ -193,13 +235,10 @@
   ===========================
   Cambios aplicados (resumen)
   ===========================
-  - Rebrand: KWMP -> KWSR.
-  - Hotkey fallback alineada con commands: Alt+Shift+K (toggle).
-  - Se cambió el mensaje esperado desde background a:
-      { action: "toggleExtension" }
-    y se dejó compat con { action: "toggleNarrator" } por si quedó algo viejo.
-  - updateSettings / setTrack / getTracks quedan iguales, pero con KWSR.*
-  - Panel hotkey: solo funciona si la extensión está ON (no crea UI si está OFF).
-  - Entrypoint: se mantiene KWSR.pipeline.init() al final, sin crear UI.
+  - Blindaje de onMessage:
+      - safeRespond() garantiza responder solo una vez
+      - safety-timeout para caminos async que se queden colgados
+      - return true SOLO en updateSettings async real
+  - No cambia la lógica de hotkeys ni mensajes: solo robustez.
   */
 })();
