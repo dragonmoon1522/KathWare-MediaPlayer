@@ -155,6 +155,92 @@
     console.error("[KathWare]", ...a);
     KWSR.emitLog("error", { msg: toMsg(a) });
   };
+  // ==========================
+  // Debug bridge (Netflix-proof)
+  // ==========================
+  // Permite usar desde consola (main world):
+  //   await window.KWSR_CMD("setCFG", { debugVisual:true })
+  //   await window.KWSR_CMD("getCFG")
+  //   await window.KWSR_CMD("getState")
+  try {
+    // Listener en content-script (isolated) que recibe comandos
+    window.addEventListener("message", (ev) => {
+      if (ev.source !== window) return;
+      const data = ev.data || {};
+      if (data.__KWSR_CMD__ !== true) return;
+
+      const { id, cmd, payload } = data;
+
+      const reply = (ok, out) => {
+        try { window.postMessage({ __KWSR_RSP__: true, id, ok, out }, "*"); } catch {}
+      };
+
+      try {
+        if (cmd === "setCFG") {
+          const obj = payload && typeof payload === "object" ? payload : {};
+          Object.assign(KWSR.CFG, obj);
+          reply(true, { CFG: KWSR.CFG });
+          return;
+        }
+        if (cmd === "getCFG") {
+          reply(true, { CFG: KWSR.CFG });
+          return;
+        }
+        if (cmd === "getState") {
+          const s = KWSR.state || {};
+          reply(true, {
+            extensionActiva: s.extensionActiva,
+            modoNarradorGlobal: s.modoNarradorGlobal,
+            fuenteSubGlobal: s.fuenteSubGlobal,
+            effectiveFuente: s.effectiveFuente,
+            trackIndexGlobal: s.trackIndexGlobal,
+            lastSig: s.lastSig,
+            lastTrackSeen: s.lastTrackSeen,
+            lastVisualSeen: s.lastVisualSeen,
+            visualSelectorUsed: s.visualSelectorUsed || null
+          });
+          return;
+        }
+        reply(false, { error: "unknown_cmd" });
+      } catch (e) {
+        reply(false, { error: String(e?.message || e) });
+      }
+    }, false);
+
+    // Inyecta helper en main world (consola)
+    const s = document.createElement("script");
+    s.textContent = `
+      (function(){
+        if (window.KWSR_CMD) return;
+        let seq = 0;
+        const pending = new Map();
+
+        window.KWSR_CMD = function(cmd, payload){
+          return new Promise((resolve, reject) => {
+            const id = "kwsr_" + (++seq) + "_" + Date.now();
+            pending.set(id, { resolve, reject });
+            window.postMessage({ __KWSR_CMD__: true, id, cmd, payload }, "*");
+            setTimeout(() => {
+              if (!pending.has(id)) return;
+              pending.delete(id);
+              reject(new Error("KWSR_CMD timeout"));
+            }, 1500);
+          });
+        };
+
+        window.addEventListener("message", (ev) => {
+          const d = ev.data || {};
+          if (d.__KWSR_RSP__ !== true) return;
+          const p = pending.get(d.id);
+          if (!p) return;
+          pending.delete(d.id);
+          (d.ok ? p.resolve : p.reject)(d.out);
+        }, false);
+      })();
+    `;
+    document.documentElement.appendChild(s);
+    s.remove();
+  } catch {}
 
   // ---------------- Storage loader ----------------
   // Lo dejamos como módulo KWSR.storage para que lo use pipeline/hotkeys

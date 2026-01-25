@@ -6,7 +6,7 @@
 // - En Disney SOLO leemos líneas hive (renderer-line).
 // - Bloqueo duro anti menú Audio/Subtítulos + idiomas.
 // - Gating del observer: procesar solo mutaciones que toquen hive-line.
-// - Debounce + rate limit para evitar lecturas repetidas por re-render.
+// - Debounce + estabilización universal (anti re-render / texto parcial)
 // ====================================================
 
 (() => {
@@ -14,11 +14,19 @@
   if (!KWSR || KWSR.visual) return;
 
   const S = KWSR.state;
+  const CFG = KWSR.CFG || {};
   const { normalize } = KWSR.utils;
+
+  // Defaults “universales” (si no existen en CFG)
+  const VISUAL_STABLE_MS   = Number.isFinite(CFG.visualStableMs)   ? CFG.visualStableMs   : 160; // 120..220
+  const VISUAL_MIN_REPEAT  = Number.isFinite(CFG.visualMinRepeatMs)? CFG.visualMinRepeatMs: 450; // 450..700
+  const DEBUG_VISUAL       = !!CFG.debugVisual;
 
   function platform() {
     return KWSR.platforms?.getPlatform?.() || "generic";
   }
+
+  const dlog = (...a) => DEBUG_VISUAL && console.log("[KWSR][VISUAL]", ...a);
 
   // -------------------- Anti “Audio/Subtítulos + idiomas” (hard) --------------------
   function isLanguageMenuText(text) {
@@ -59,6 +67,7 @@
     const tag = (node?.tagName || "").toUpperCase();
     if (["A","BUTTON","INPUT","TEXTAREA","SELECT","LABEL"].includes(tag)) return true;
 
+    // límites generales (sub puede ser largo, pero no infinito)
     if (t.length < 2 || t.length > 420) return true;
 
     return false;
@@ -68,13 +77,12 @@
   function isVisible(el) {
     try {
       if (!el || !(el instanceof Element)) return false;
-      // offsetParent = null cuando display:none (no siempre con position:fixed, pero igual suma)
       const style = window.getComputedStyle(el);
       if (!style) return false;
       if (style.display === "none" || style.visibility === "hidden") return false;
       const opacity = parseFloat(style.opacity || "1");
       if (opacity <= 0.01) return false;
-      // si no ocupa nada, suele ser UI fantasma
+
       const r = el.getBoundingClientRect?.();
       if (!r) return true;
       if (r.width < 2 && r.height < 2) return false;
@@ -86,7 +94,6 @@
 
   // -------------------- Disney: aceptar SOLO hive subtitles --------------------
   function disneyOnlySelectors() {
-    // Importante: NO usar ".hive-subtitle-renderer-line *" porque a veces trae spans extraños.
     return [
       ".hive-subtitle-renderer-line",
       "[class*='hive-subtitle-renderer-line']",
@@ -95,14 +102,64 @@
     ];
   }
 
+  // Fallback genérico si una plataforma nueva no tiene selector:
+  // (ojo: no es “perfecto”, pero te da chances sin hardcodear hostnames)
+  function genericFallbackSelectors() {
+    return [
+      // los clásicos “SR / live regions”
+      "[aria-live='polite']",
+      "[aria-live='assertive']",
+      "[role='status']",
+      // palabras comunes
+      "[class*='caption']",
+      "[class*='subtit']",
+      "[class*='timedtext']",
+      "[class*='timed-text']",
+      "[data-testid*='caption']",
+      "[data-testid*='subtitle']",
+    ];
+  }
+
   function getSelectors() {
     const p = platform();
     if (p === "disney") return disneyOnlySelectors();
-    return KWSR.platforms?.platformSelectors?.(p) || [];
+
+    const fromPlatform = KWSR.platforms?.platformSelectors?.(p) || [];
+    if (fromPlatform.length) return fromPlatform;
+
+    // si no sabemos nada: fallback “best effort”
+    return genericFallbackSelectors();
   }
 
   function getFreshNodesBySelector(sel) {
     try { return Array.from(document.querySelectorAll(sel)); } catch { return []; }
+  }
+
+  function smartJoin(lines) {
+    if (!lines || !lines.length) return "";
+    let result = lines[0];
+
+    for (let i = 1; i < lines.length; i++) {
+      const prev = result.trim();
+      const curr = lines[i];
+
+      // Si ya hay puntuación fuerte, no inventamos nada
+      if (/[.!?…]$/.test(prev)) {
+        result = prev + " " + curr;
+        continue;
+      }
+
+      // Si ambas parecen fragmentos cortos e independientes → coma
+      if (prev.length < 40 && curr.length < 40) {
+        result = prev + ", " + curr;
+        continue;
+      }
+
+      // Caso general: continuidad natural
+      result = prev + " " + curr;
+    }
+
+    return normalize(result);
   }
 
   function readTextFromNodes(nodes, p) {
@@ -120,6 +177,7 @@
       const t = normalize(raw);
       if (!t) continue;
 
+      // Disney: hard filters extra
       if (p === "disney" && isLanguageMenuText(t)) continue;
       if (p === "disney" && t.length > 140) continue;
       if (p === "disney" && /t\d+\s*:\s*e\d+/i.test(t) && t.length > 60) continue;
@@ -140,37 +198,7 @@
       uniq.push(x);
     }
 
-    function smartJoin(lines) {
-  if (!lines || !lines.length) return "";
-
-  let result = lines[0];
-
-  for (let i = 1; i < lines.length; i++) {
-    const prev = result.trim();
-    const curr = lines[i];
-
-    // Si ya hay puntuación fuerte, no inventamos nada
-    if (/[.!?…]$/.test(prev)) {
-      result = prev + " " + curr;
-      continue;
-    }
-
-    // Si ambas parecen fragmentos cortos e independientes → coma
-    if (prev.length < 40 && curr.length < 40) {
-      result = prev + ", " + curr;
-      continue;
-    }
-
-    // Caso general: continuidad natural
-    result = prev + " " + curr;
-  }
-
-  return normalize(result);
-}
-
-
     return smartJoin(uniq);
-
   }
 
   function pickBestSelector(p) {
@@ -185,6 +213,53 @@
     return "";
   }
 
+  // -------------------- Estabilizador universal (anti texto parcial / re-render) --------------------
+  function stableKey(text) {
+    return normalize(text)
+      .replace(/\u00A0/g, " ")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function scheduleStableEmit(text, p) {
+    const key = stableKey(text);
+    if (!key) return;
+
+    // filtro extra: si por algún motivo entra menú, ni candidato
+    if (isLanguageMenuText(text)) return;
+
+    S._visualCandidateText = text;
+    S._visualCandidateKey = key;
+
+    // cada update reinicia el timer → emitimos el “último estado estable”
+    try { if (S._visualStableTimer) clearTimeout(S._visualStableTimer); } catch {}
+    S._visualStableTimer = setTimeout(() => emitStableNow(p), VISUAL_STABLE_MS);
+  }
+
+  function emitStableNow(p) {
+    const text = S._visualCandidateText || "";
+    if (!text) return;
+
+    const key = S._visualCandidateKey || stableKey(text);
+    if (!key) return;
+
+    const now = performance.now();
+
+    // Anti eco por re-render (mismo texto en ventana chica)
+    if (key === (S._visualLastSpokenKey || "") && (now - (S._visualLastSpokenAt || 0)) < VISUAL_MIN_REPEAT) {
+      return;
+    }
+
+    S._visualLastSpokenKey = key;
+    S._visualLastSpokenAt = now;
+    S.lastVisualSeen = text;
+
+    dlog("emit", { p, key, text });
+    KWSR.voice.leerTextoAccesible(text);
+  }
+
   function stopVisualObserver() {
     try { S.visualObserver?.disconnect?.(); } catch {}
     S.visualObserver = null;
@@ -192,31 +267,39 @@
 
     // scheduler flags
     S._visualScheduled = false;
+
+    // stable emitter state
+    try { if (S._visualStableTimer) clearTimeout(S._visualStableTimer); } catch {}
+    S._visualStableTimer = null;
+    S._visualCandidateText = "";
+    S._visualCandidateKey = "";
+
+    // last spoken
     S._visualLastSpokenAt = 0;
-    S._visualLastSpokenText = "";
+    S._visualLastSpokenKey = "";
   }
 
-  // -------------------- Scheduler anti-spam --------------------
+  // -------------------- Scheduler anti-spam (observer -> debounce) --------------------
   function scheduleVisualRead(reasonNode) {
-    // Gate general
     if (!KWSR.voice.shouldReadNow()) return;
     if (S.effectiveFuente !== "visual") return;
 
-    // Disney gating: si la mutación no está tocando una hive-line, ignoramos.
     const p = platform();
+
+    // Disney gating: si la mutación no toca hive-line, ignoramos.
     if (p === "disney" && reasonNode) {
       try {
         const el = reasonNode.nodeType === 1 ? reasonNode : reasonNode.parentElement;
         if (el && !el.closest?.(".hive-subtitle-renderer-line,[class*='hive-subtitle-renderer-line']")) {
           return;
         }
-      } catch { /* ignore */ }
+      } catch {}
     }
 
     if (S._visualScheduled) return;
     S._visualScheduled = true;
 
-    // Debounce por frame (Disney re-renderiza múltiples veces seguidas)
+    // Debounce por frame: juntamos mutaciones del mismo frame
     requestAnimationFrame(() => {
       S._visualScheduled = false;
       pollVisualTick(true);
@@ -226,7 +309,6 @@
   function startVisual() {
     const p = platform();
     S.visualSelectors = getSelectors();
-
     S.visualSelectorUsed = pickBestSelector(p);
 
     stopVisualObserver();
@@ -235,17 +317,16 @@
       S.visualObserver = new MutationObserver((mutations) => {
         if (!mutations || !mutations.length) return;
 
-        // Elegimos “un nodo motivo” para gating Disney: el primero relevante
+        // nodo motivo (para gating Disney)
         let reasonNode = null;
         for (const m of mutations) {
           if (m.target) { reasonNode = m.target; break; }
           if (m.addedNodes && m.addedNodes[0]) { reasonNode = m.addedNodes[0]; break; }
         }
-
         scheduleVisualRead(reasonNode);
       });
 
-      // Disney recrea DOM: observar doc entero, pero con gating dentro del scheduler.
+      // observar doc entero (universal) + gating en scheduler para Disney
       S.visualObserver.observe(document.documentElement, {
         childList: true,
         subtree: true,
@@ -257,6 +338,7 @@
       S.visualObserverActive = false;
     }
 
+    dlog("start", { p, selector: S.visualSelectorUsed, selectors: S.visualSelectors });
     KWSR.overlay?.updateOverlayStatus?.();
   }
 
@@ -276,32 +358,54 @@
     const t = readTextFromNodes(nodes, p);
     if (!t) return;
 
-    // Dedupe + rate limit (evita re-lecturas por re-render)
-    const now = performance.now();
+    // En vez de “leer ya”, estabilizamos SIEMPRE (universal)
+    scheduleStableEmit(t, p);
 
-    // Si es exactamente el mismo texto MUY pegado, lo ignoramos
-    const minRepeatMs = 450; // ajustable: 350-600 según pruebas
-    if (t === (S._visualLastSpokenText || "") && (now - (S._visualLastSpokenAt || 0)) < minRepeatMs) {
-      return;
+    // opcional: en polling (no observer) evitamos recalentar la CPU con logs
+    if (!fromObserver) {
+      // nada
     }
-
-    // También evitamos repetir lastVisualSeen en tick normal,
-    // pero NO lo usamos como único freno (porque “Sí.” puede repetirse legítimo)
-    if (!fromObserver && t === S.lastVisualSeen) return;
-    S.lastVisualSeen = t;
-
-    S._visualLastSpokenText = t;
-    S._visualLastSpokenAt = now;
-
-    KWSR.voice.leerTextoAccesible(t);
   }
 
   function visualReselectTick() {
     const p = platform();
     const next = pickBestSelector(p);
     if (next && next !== (S.visualSelectorUsed || "")) {
+      dlog("reselect", { p, from: S.visualSelectorUsed, to: next });
       S.visualSelectorUsed = next;
       startVisual();
+    }
+  }
+
+  // -------------------- Debug helper: scan de candidatos “raros” --------------------
+  // Útil para plataformas donde no sabés el selector:
+  // KWSR.visual.debugScanCandidates()
+  function debugScanCandidates(limit = 20) {
+    try {
+      const sels = getSelectors();
+      const p = platform();
+
+      const items = [];
+      for (const sel of sels) {
+        const nodes = getFreshNodesBySelector(sel);
+        if (!nodes.length) continue;
+
+        const text = readTextFromNodes(nodes, p);
+        if (!text) continue;
+
+        items.push({ sel, nodes: nodes.length, text });
+      }
+
+      items.sort((a, b) => (b.text.length - a.text.length));
+      console.log("[KWSR][VISUAL][SCAN]", {
+        platform: p,
+        selectorUsed: S.visualSelectorUsed,
+        stableMs: VISUAL_STABLE_MS,
+        minRepeatMs: VISUAL_MIN_REPEAT,
+        top: items.slice(0, limit)
+      });
+    } catch (e) {
+      console.warn("[KWSR][VISUAL][SCAN] error", e);
     }
   }
 
@@ -309,7 +413,7 @@
     startVisual,
     stopVisualObserver,
     pollVisualTick,
-    visualReselectTick
+    visualReselectTick,
+    debugScanCandidates
   };
-
 })();
