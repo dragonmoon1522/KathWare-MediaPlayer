@@ -98,8 +98,10 @@
     S.lastVisualSeen = "";
     S.lastEmitText = "";
     S.lastEmitAt = 0;
-
-    // recompute
+S.lastTrackKey = "";
+S.lastTrackAt = 0;
+    
+// recompute
     S.effectiveFuente = "visual";
     S.lastSig = "";
 
