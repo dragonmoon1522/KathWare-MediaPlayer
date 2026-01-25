@@ -152,43 +152,71 @@
   }
 
   // -------------------- Dedupe robusto (anti-eco) --------------------
-  function fingerprint(text) {
-    return normalize(text)
-      .replace(/\u00A0/g, " ")                 // nbsp -> space
-      .replace(/[\u200B-\u200D\uFEFF]/g, "")   // zero-width chars
-      .replace(/\s+/g, " ")
-      .trim()
-      .toLowerCase();
+  function fingerprintStrict(text) {
+  return normalize(text)
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+// “loose”: ignora separadores típicos de subtítulos y la mayoría de signos
+function fingerprintLoose(text) {
+  return normalize(text)
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    // separadores comunes que cambian por plataforma
+    .replace(/[\/|·•–—]+/g, " ")
+    // signos que suelen variar sin cambiar el contenido
+    .replace(/[.,;:!?¡¿"“”'’()\[\]{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function dedupe(raw) {
+  const clean = normalize(raw);
+  if (!clean) return "";
+
+  const strictKey = fingerprintStrict(clean);
+  const looseKey  = fingerprintLoose(clean);
+  if (!strictKey && !looseKey) return "";
+
+  const now = Date.now();
+  const dt  = now - (S.lastEmitAt || 0);
+
+  const lastStrict = S.lastEmitStrictKey || "";
+  const lastLoose  = S.lastEmitLooseKey  || "";
+
+  // 1) Anti-eco inmediato: corta el “doble disparo”
+  const echoMs = (CFG.echoMs ?? 380);
+  if (
+    dt < echoMs &&
+    (
+      strictKey === lastStrict ||
+      looseKey === lastLoose ||
+      // caso “casi igual”: uno contiene al otro (ej: "hola chau" vs "hola  chau")
+      (lastLoose && looseKey && (lastLoose.includes(looseKey) || looseKey.includes(lastLoose)))
+    )
+  ) {
+    return "";
   }
 
-  function dedupe(raw) {
-    const clean = normalize(raw);
-    if (!clean) return "";
+  // 2) Cooldown normal (pero solo con strict, para no comerte cambios reales)
+  const base = (CFG.cooldownMs ?? 650);
+  const extra = Math.min(1100, strictKey.length * 12);
+  const windowMs = base + extra;
 
-    const key = fingerprint(clean);
-    if (!key) return "";
+  if (strictKey === lastStrict && dt < windowMs) return "";
 
-    const now = Date.now();
+  S.lastEmitStrictKey = strictKey;
+  S.lastEmitLooseKey  = looseKey;
+  S.lastEmitAt = now;
+  S.lastEmitText = clean;
 
-    const dt = now - (S.lastEmitAt || 0);
-    const sameKey = (key === (S.lastEmitKey || ""));
-
-    // 1) Anti-eco inmediato (corta el “lo dijo 2 veces”)
-    const echoMs = (CFG.echoMs ?? 320);
-    if (sameKey && dt < echoMs) return "";
-
-    // 2) Cooldown normal (anti re-render pesado)
-    const base = (CFG.cooldownMs ?? 900);
-    const extra = Math.min(1400, key.length * 18);
-    const windowMs = base + extra;
-
-    if (sameKey && dt < windowMs) return "";
-
-    S.lastEmitKey = key;
-    S.lastEmitAt = now;
-    S.lastEmitText = clean;
-    return clean;
-  }
+  return clean;
+}
 
   function speakTTS(text) {
     if (!isTTSAvailable()) {
