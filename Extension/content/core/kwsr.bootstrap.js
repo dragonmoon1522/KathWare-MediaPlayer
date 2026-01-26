@@ -1,53 +1,131 @@
 // ====================================================
 // KathWare SubtitleReader - kwsr.bootstrap.js
-// - Crea window.KWSR (namespace global)
-// - Detecta API (chrome/browser)
-// - Logger -> consola + background (kathLogs) vía runtime.sendMessage
-// - Storage loader (modo/fuente/track/debug/hotkeys)
+// ====================================================
+//
+// Este archivo es el "punto de arranque" del content-script.
+// Se carga primero (ver manifest) y hace 4 cosas base:
+//
+// 1) Crea un objeto global: window.KWSR
+//    - Es un "contenedor" donde cuelgan todos los módulos.
+//    - Así evitamos variables sueltas por todos lados.
+//
+// 2) Detecta la API del navegador (chrome o browser).
+//    - Chrome / Edge / Opera / Brave (Chromium) suelen exponer `chrome`.
+//    - Firefox suele exponer `browser` (y a veces también `chrome`).
+//
+// 3) Define un sistema de logs:
+//    - Log local (console.log/warn/error)
+//    - Log remoto opcional (manda eventos al background para poder adjuntarlos en reportes)
+//
+// 4) Carga configuración desde storage.local:
+//    - modoNarrador (off / sintetizador / lector)
+//    - fuenteSub (auto / track / visual)
+//    - trackIndex
+//    - debug
+//    - hotkeys
+//
+// IMPORTANTÍSIMO (para evitar bugs):
+// - Este archivo usa "guardas" para que NO se cargue dos veces.
+// - Si se ejecuta dos veces por error, podemos duplicar observers/timers y leer subtítulos repetidos.
+//
 // ====================================================
 
 (() => {
+  // ------------------------------------------------------------
+  // GUARDA: si ya existe window.KWSR, salimos.
+  // Esto evita doble carga y bugs de duplicación.
+  // ------------------------------------------------------------
   if (window.KWSR) return;
 
+  // ------------------------------------------------------------
+  // Detectar API de extensión:
+  // - En Chromium: `chrome`
+  // - En Firefox: `browser`
+  //
+  // Si no encontramos ninguna, api queda null y la extensión igual puede
+  // funcionar parcialmente (por ejemplo, sin storage o sin logs remotos).
+  // ------------------------------------------------------------
   const api =
     (typeof chrome !== "undefined" && chrome?.runtime) ? chrome :
     (typeof browser !== "undefined" && browser?.runtime) ? browser :
     null;
 
+  // ------------------------------------------------------------
+  // KWSR = "objeto central" donde guardamos:
+  // - version: versión de la extensión (para logs/reportes)
+  // - api: chrome/browser API (si existe)
+  // - CFG: configuración técnica (timings, dedupe, etc.)
+  // - state: estado vivo de ejecución (refs DOM, timers, etc.)
+  // ------------------------------------------------------------
   const KWSR = {
     version: "2.0.0",
     api,
-    CFG: {
-      debug: true,
-      allowRemoteLogs: true, // logs al background (para popup / issues)
 
-      // Hotkeys se definen en kwsr.hotkeys.js (fallback) y pueden venir del storage
+    // ==========================================================
+    // CFG (Configuración técnica)
+    // ==========================================================
+    // - Son valores "por defecto" para el funcionamiento interno.
+    // - Se pueden modificar desde storage o desde consola (debug).
+    // - NO es estado cambiante; son parámetros.
+    CFG: {
+      // Si debug = true, hacemos console.log en pantalla.
+      // Igual, los logs remotos pueden estar prendidos/apagados aparte.
+      debug: true,
+
+      // Si allowRemoteLogs = true, mandamos logs al background para:
+      // - Adjuntarlos en reportes (GitHub Issues)
+      // - Diagnóstico cuando el usuario habilita "Adjuntar logs"
+      allowRemoteLogs: true,
+
+      // Hotkeys (atajos) personalizados:
+      // - Se completan en kwsr.hotkeys.js
+      // - También pueden venir del storage (por si a futuro el usuario los cambia)
       hotkeys: null,
 
-      // Pipeline timings (defaults “sanos”)
+      // ---- Timings del motor ("flujo"/pipeline) ----
+      // rehookMs: cada cuánto revisamos si cambió el video/track (porque las páginas mutan DOM)
       rehookMs: 1200,
+
+      // Polling fallback:
+      // - TRACK: por si oncuechange no dispara o dispara mal
       pollMsTrack: 220,
+
+      // - VISUAL: por si el MutationObserver falla o la plataforma no lo dispara bien
       pollMsVisual: 220,
+
+      // VISUAL: cada cuánto re-elegimos selector si el DOM cambió (plataformas que re-renderizan)
       visualReselectMs: 1300,
 
-      // Adapters (keepAlive + nonAccessible)
+      // Adapters: keepAlive + nonAccessible tick
       adaptersMs: 650,
 
-      // Player controls
+      // Controles del reproductor (overlay/hotkeys player)
       seekSmall: 5,
       seekBig: 10,
       volStep: 0.05,
 
-      // Voice dedupe
+      // ----------------------------
+      // DEDUPE / Anti-eco
+      // ----------------------------
+      // "dedupe" significa "deduplicación":
+      // evitar leer lo mismo dos veces (o tres) cuando una plataforma dispara eventos duplicados.
       burstMs: 300,
       cooldownMs: 800,
 
-      // Overlay behavior
+      // Overlay: abrir panel automáticamente cuando detectamos subtítulos
       autoOpenPanelOnSubs: false
     },
 
+    // ==========================================================
+    // state (Estado vivo)
+    // ==========================================================
+    // - Referencias a elementos DOM creados por nosotros (overlay, toast, live regions)
+    // - Timers activos
+    // - "último texto leído" para dedupe
+    // - Video/track actual elegido
+    // ==========================================================
     state: {
-      // overlay refs
+      // IDs/refs de UI (overlay)
       overlayRoot: null,
       overlayPanel: null,
       overlayPill: null,
@@ -60,15 +138,18 @@
       // toast
       toastEl: null,
       toastTimer: null,
+      toastLiveRegion: null, // lo crea kwsr.toast.js
 
-      // settings
+      // settings de usuario (guardados en storage)
       extensionActiva: false,
       modoNarradorGlobal: "lector", // "off" | "sintetizador" | "lector"
       fuenteSubGlobal: "auto",      // "auto" | "track" | "visual"
       trackIndexGlobal: 0,
+
+      // Fuente efectiva real (lo decide pipeline según disponibilidad)
       effectiveFuente: "visual",
 
-      // voice/live region
+      // voice/live region (motor de lectura)
       voiceES: null,
       liveRegion: null,
 
@@ -76,7 +157,7 @@
       currentVideo: null,
       currentTrack: null,
 
-      // timers/observers
+      // timers/observers (se limpian en pipeline.stopAll)
       pollTimerTrack: null,
       rehookTimer: null,
       pollTimerVisual: null,
@@ -86,19 +167,26 @@
       visualObserver: null,
       visualObserverActive: false,
 
-      // visual node/sel
+      // VISUAL
       visualNode: null,
       visualSelectors: null,
+      visualSelectorUsed: null,
 
-      // dedupe lectura (global)
+      // dedupe global (para lectura final)
       lastEmitText: "",
       lastEmitAt: 0,
+      lastEmitStrictKey: "",
+      lastEmitLooseKey: "",
 
-      // per-source change detection
+      // per-source (para TRACK/VISUAL)
       lastTrackSeen: "",
       lastVisualSeen: "",
 
-      // rehook signature
+      // TRACK dedupe keys (si están en uso)
+      lastTrackKey: "",
+      lastTrackAt: 0,
+
+      // rehook signature (para detectar cambios)
       lastSig: "",
 
       // --- Adapters: nonAccessible platforms ---
@@ -109,9 +197,17 @@
     }
   };
 
+  // Lo exponemos globalmente para que el resto de módulos lo use:
   window.KWSR = KWSR;
 
-  // ---------------- Logger ----------------
+  // ==========================================================
+  // LOGGER (logs)
+  // ==========================================================
+  // - KWSR.log / warn / error imprimen en consola
+  // - emitLog manda al background si allowRemoteLogs está ON
+  // ==========================================================
+
+  // Convierte cualquier cosa a string sin romper
   const safeStringify = (x) => {
     try {
       if (typeof x === "string") return x;
@@ -123,6 +219,7 @@
 
   const toMsg = (arr) => arr.map(safeStringify).join(" ");
 
+  // Envía un log al background (para guardar en storage.local[kathLogs])
   KWSR.emitLog = (level, payload = {}) => {
     try {
       if (!KWSR.CFG.allowRemoteLogs) return;
@@ -137,6 +234,9 @@
           platform: KWSR.platforms?.getPlatform?.() || "unknown",
           ...payload
         }
+      }, () => {
+        // Evita warnings en algunos navegadores si nadie responde
+        void KWSR.api?.runtime?.lastError;
       });
     } catch (_) {}
   };
@@ -155,15 +255,26 @@
     console.error("[KathWare]", ...a);
     KWSR.emitLog("error", { msg: toMsg(a) });
   };
-  // ==========================
-  // Debug bridge (Netflix-proof)
-  // ==========================
-  // Permite usar desde consola (main world):
-  //   await window.KWSR_CMD("setCFG", { debugVisual:true })
+
+  // ==========================================================
+  // DEBUG BRIDGE (puente para consola)
+  // ==========================================================
+  // Problema real:
+  // - Los content scripts viven en un "mundo aislado".
+  // - Si abrís la consola normal del sitio, no siempre podés acceder directo
+  //   a variables del content script como window.KWSR.
+  //
+  // Solución:
+  // - Creamos un mini-sistema de comandos usando window.postMessage.
+  // - Inyectamos un helper window.KWSR_CMD(...) en el "mundo principal".
+  //
+  // Ejemplos:
   //   await window.KWSR_CMD("getCFG")
+  //   await window.KWSR_CMD("setCFG", { debugVisual:true })
   //   await window.KWSR_CMD("getState")
+  // ==========================================================
   try {
-    // Listener en content-script (isolated) que recibe comandos
+    // 1) Listener en el content-script (mundo aislado) que recibe comandos del sitio
     window.addEventListener("message", (ev) => {
       if (ev.source !== window) return;
       const data = ev.data || {};
@@ -182,10 +293,12 @@
           reply(true, { CFG: KWSR.CFG });
           return;
         }
+
         if (cmd === "getCFG") {
           reply(true, { CFG: KWSR.CFG });
           return;
         }
+
         if (cmd === "getState") {
           const s = KWSR.state || {};
           reply(true, {
@@ -201,17 +314,19 @@
           });
           return;
         }
+
         reply(false, { error: "unknown_cmd" });
       } catch (e) {
         reply(false, { error: String(e?.message || e) });
       }
     }, false);
 
-    // Inyecta helper en main world (consola)
+    // 2) Inyección del helper en el mundo principal (para usarlo en consola)
     const s = document.createElement("script");
     s.textContent = `
       (function(){
         if (window.KWSR_CMD) return;
+
         let seq = 0;
         const pending = new Map();
 
@@ -220,6 +335,8 @@
             const id = "kwsr_" + (++seq) + "_" + Date.now();
             pending.set(id, { resolve, reject });
             window.postMessage({ __KWSR_CMD__: true, id, cmd, payload }, "*");
+
+            // Timeout por si el sitio bloquea el canal o algo raro pasa
             setTimeout(() => {
               if (!pending.has(id)) return;
               pending.delete(id);
@@ -242,8 +359,19 @@
     s.remove();
   } catch {}
 
-  // ---------------- Storage loader ----------------
-  // Lo dejamos como módulo KWSR.storage para que lo use pipeline/hotkeys
+  // ==========================================================
+  // STORAGE LOADER
+  // ==========================================================
+  // Lee valores guardados por el popup/overlay/hotkeys:
+  // - modoNarrador
+  // - fuenteSub
+  // - trackIndex
+  // - debug
+  // - hotkeys
+  //
+  // Se expone como KWSR.storage.cargarConfigDesdeStorage(cb)
+  // para que pipeline/hotkeys lo llamen sin duplicar lógica.
+  // ==========================================================
   KWSR.storage = {
     cargarConfigDesdeStorage(cb) {
       if (!KWSR.api?.storage?.local) return cb && cb();
@@ -252,16 +380,20 @@
         ["modoNarrador", "fuenteSub", "trackIndex", "debug", "hotkeys"],
         (data) => {
           try {
+            // debug
             if (typeof data?.debug === "boolean") KWSR.CFG.debug = data.debug;
 
+            // modo/fuente
             if (data?.modoNarrador) KWSR.state.modoNarradorGlobal = data.modoNarrador;
             if (data?.fuenteSub) KWSR.state.fuenteSubGlobal = data.fuenteSub;
 
+            // track index
             if (typeof data?.trackIndex !== "undefined") {
               const n = Number(data.trackIndex);
               KWSR.state.trackIndexGlobal = Number.isFinite(n) ? n : 0;
             }
 
+            // hotkeys (merge con lo existente)
             if (data?.hotkeys && typeof data.hotkeys === "object") {
               KWSR.CFG.hotkeys = { ...(KWSR.CFG.hotkeys || {}), ...data.hotkeys };
             }
@@ -274,14 +406,13 @@
 
   /*
   ===========================
-  Cambios aplicados (resumen)
+  Glosario rápido (sin humo)
   ===========================
-  - Renombre global: window.KWMP -> window.KWSR.
-  - Se movieron defaults de timings al CFG (incluye adaptersMs + seek/vol + dedupe).
-  - State actualizado para:
-      - pipeline nuevo (adaptersTimer en lugar de keepControlsTimer)
-      - adapters no-accessible: firmas, contadores, observer y WeakSet de menús
-  - Logger mantiene el envío a background (logEvent) y ahora reporta platform via KWSR.platforms.getPlatform() si existe.
-  - Storage loader mantiene compat: modoNarrador / fuenteSub / trackIndex / debug / hotkeys.
+  - Namespace global: un objeto único (window.KWSR) que agrupa todo.
+  - CFG: "configuración" (parámetros del motor).
+  - state: "estado" (lo que cambia mientras corre).
+  - dedupe: "deduplicar" → evitar repetir el mismo texto.
+  - rehook: "reenganchar" → re-detectar video/track/selector cuando la página cambia el DOM.
+  - pipeline: "flujo" o "cadena de procesamiento" → cómo se conectan track/visual → voice → UI.
   */
 })();
