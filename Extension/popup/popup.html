@@ -6,129 +6,84 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="popup.css" />
 </head>
+
 <body>
   <header>
     <h1>KathWare SubtitleReader</h1>
-    <p>Subtítulos y transcripción accesibles en tiempo real.</p>
+    <p>Lectura accesible de subtítulos en tiempo real.</p>
   </header>
 
   <main>
+
+    <!-- Estado general -->
+    <section class="info">
+      <p>
+        Activá la extensión en la pestaña actual para comenzar a leer subtítulos
+        automáticamente con tu lector de pantalla o con voz del sistema.
+      </p>
+    </section>
+
+    <!-- Atajos -->
+    <section>
+      <h2>Atajos de teclado</h2>
+      <ul>
+        <li><strong>Alt + Shift + K</strong> — Activar / desactivar la extensión</li>
+        <li><strong>Alt + Shift + L</strong> — Cambiar modo de lectura</li>
+        <li><strong>Alt + Shift + O</strong> — Abrir / cerrar el panel accesible</li>
+      </ul>
+    </section>
+
+    <!-- Modo de lectura -->
     <section>
       <label for="modoNarrador">Modo de lectura:</label>
       <select id="modoNarrador">
-        <option value="off">Desactivado</option>
-        <option value="sintetizador">Voz del sistema</option>
         <option value="lector">Lector de pantalla</option>
+        <option value="sintetizador">Voz del sistema</option>
+        <option value="off">Desactivado</option>
       </select>
+      <p class="help">
+        El idioma y la voz dependen de la configuración de tu lector o navegador.
+      </p>
     </section>
 
+    <!-- Reporte -->
     <section>
-      <label for="fuenteSub">Fuente de texto:</label>
-      <select id="fuenteSub">
-        <option value="auto">Automático (recomendado)</option>
-        <option value="track">Pistas (TRACK)</option>
-        <option value="visual">Texto en pantalla (VISUAL)</option>
-      </select>
-    </section>
-
-    <section>
-      <label for="selectorTrack">Pista seleccionada:</label>
-      <select id="selectorTrack"></select>
-    </section>
-
-    <section>
-      <label for="reporteError">Reportar un error:</label>
-      <textarea id="reporteError" rows="4" placeholder="Describí el problema encontrado..."></textarea>
+      <label for="reporteError">Reportar un problema:</label>
+      <textarea
+        id="reporteError"
+        rows="4"
+        placeholder="Describí qué ocurrió y en qué plataforma…">
+      </textarea>
       <button id="enviarReporte">Enviar reporte</button>
     </section>
 
     <section>
       <label for="permitirEnvioLogs">
         <input type="checkbox" id="permitirEnvioLogs" />
-        Adjuntar logs técnicos (opcional)
+        Adjuntar información técnica (opcional)
       </label>
-    </section>
-
-    <section class="info">
-      <p><strong>Atajo rápido:</strong> Alt + Shift + K para activar o desactivar.</p>
     </section>
 
     <footer>
       <ul>
-        <li><a href="https://kathware.com.ar/normas-de-uso-y-licencias-de-kathware/" target="_blank" rel="noopener">Licencias y condiciones</a></li>
-        <li><a href="https://kathware.com.ar/lau/" target="_blank" rel="noopener">Licencia de Accesibilidad Universal (LAU)</a></li>
-        <li><a href="https://kathware.com.ar/politica-de-privacidad/" target="_blank" rel="noopener">Política de privacidad</a></li>
-        <li><a href="https://github.com/dragonmoon1522/KathWare-SubtitleReader" target="_blank" rel="noopener">Repositorio en GitHub</a></li>
+        <li>
+          <a href="https://kathware.com.ar/lau/" target="_blank" rel="noopener">
+            Licencia de Accesibilidad Universal (LAU)
+          </a>
+        </li>
+        <li>
+          <a href="https://kathware.com.ar/politica-de-privacidad/" target="_blank" rel="noopener">
+            Política de privacidad
+          </a>
+        </li>
+        <li>
+          <a href="https://github.com/dragonmoon1522/KathWare-SubtitleReader" target="_blank" rel="noopener">
+            Repositorio en GitHub
+          </a>
+        </li>
       </ul>
     </footer>
-  </main>
 
-  <script src="popup.js"></script>
-</body>
-</html>
-<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8" />
-  <title>KathWare SubtitleReader</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="stylesheet" href="popup.css" />
-</head>
-<body>
-  <header>
-    <h1>KathWare SubtitleReader</h1>
-    <p>Subtítulos y transcripción accesibles en tiempo real.</p>
-  </header>
-
-  <main>
-    <section>
-      <label for="modoNarrador">Modo de lectura:</label>
-      <select id="modoNarrador">
-        <option value="off">Desactivado</option>
-        <option value="sintetizador">Voz del sistema</option>
-        <option value="lector">Lector de pantalla</option>
-      </select>
-    </section>
-
-    <section>
-      <label for="fuenteSub">Fuente de texto:</label>
-      <select id="fuenteSub">
-        <option value="auto">Automático (recomendado)</option>
-        <option value="track">Pistas (TRACK)</option>
-        <option value="visual">Texto en pantalla (VISUAL)</option>
-      </select>
-    </section>
-
-    <section>
-      <label for="selectorTrack">Pista seleccionada:</label>
-      <select id="selectorTrack"></select>
-    </section>
-
-    <section>
-      <label for="reporteError">Reportar un error:</label>
-      <textarea id="reporteError" rows="4" placeholder="Describí el problema encontrado..."></textarea>
-      <button id="enviarReporte">Enviar reporte</button>
-    </section>
-
-    <section>
-      <label for="permitirEnvioLogs">
-        <input type="checkbox" id="permitirEnvioLogs" />
-        Adjuntar logs técnicos (opcional)
-      </label>
-    </section>
-
-    <section class="info">
-      <p><strong>Atajo rápido:</strong> Alt + Shift + K para activar o desactivar.</p>
-    </section>
-
-    <footer>
-      <ul>
-        <li><a href="https://kathware.com.ar/normas-de-uso-y-licencias-de-kathware/" target="_blank" rel="noopener">Licencias y condiciones</a></li>
-        <li><a href="https://kathware.com.ar/lau/" target="_blank" rel="noopener">Licencia de Accesibilidad Universal (LAU)</a></li>
-        <li><a href="https://kathware.com.ar/politica-de-privacidad/" target="_blank" rel="noopener">Política de privacidad</a></li>
-        <li><a href="https://github.com/dragonmoon1522/KathWare-SubtitleReader" target="_blank" rel="noopener">Repositorio en GitHub</a></li>
-      </ul>
-    </footer>
   </main>
 
   <script src="popup.js"></script>

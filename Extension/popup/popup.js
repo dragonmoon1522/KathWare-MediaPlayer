@@ -1,14 +1,16 @@
 // ====================================================
 // KathWare SubtitleReader - popup.js
-// - Cambios de settings -> storage + sendMessage(updateSettings)
-// - Track list via content script -> type:getTracks
-// - Reporte -> abre GitHub Issue prellenado (repo: dragonmoon1522/KathWare-SubtitleReader)
+// Popup informativo + configuración básica
+//
+// El popup NO decide:
+// - fuente de subtítulos (track / visual)
+// - pista activa
+//
+// Todo eso se detecta automáticamente en el content script.
 // ====================================================
 
 document.addEventListener("DOMContentLoaded", () => {
   const modoNarrador = document.getElementById("modoNarrador");
-  const fuenteSub = document.getElementById("fuenteSub");
-  const selectorTrack = document.getElementById("selectorTrack");
 
   const reporteError = document.getElementById("reporteError");
   const enviarReporte = document.getElementById("enviarReporte");
@@ -17,165 +19,95 @@ document.addEventListener("DOMContentLoaded", () => {
   const GITHUB_OWNER = "dragonmoon1522";
   const GITHUB_REPO = "KathWare-SubtitleReader";
 
-  // === Helpers ===
+  // ---------------- Helpers ----------------
+
   function withActiveTab(cb) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs?.[0];
-      const tabId = tab?.id;
-      if (!tabId) return;
-      cb(tabId, tab);
+      if (!tab?.id) return;
+      cb(tab.id, tab);
     });
   }
 
-  function notificarCambio() {
+  function notifyContentScript() {
     withActiveTab((tabId) => {
-      chrome.tabs.sendMessage(tabId, { action: "updateSettings" }, () => {
-        // evita warnings en consola del popup si no hay content script
-        void chrome.runtime.lastError;
-      });
+      chrome.tabs.sendMessage(
+        tabId,
+        { action: "updateSettings" },
+        () => void chrome.runtime.lastError
+      );
     });
   }
 
-  // === Cargar valores guardados ===
-  chrome.storage.local.get(["modoNarrador", "fuenteSub", "trackIndex"], (data) => {
-    if (data?.modoNarrador && modoNarrador) modoNarrador.value = data.modoNarrador;
-    if (data?.fuenteSub && fuenteSub) fuenteSub.value = data.fuenteSub;
-    if (typeof data?.trackIndex !== "undefined" && selectorTrack) selectorTrack.value = String(data.trackIndex);
+  // ---------------- Cargar configuración ----------------
+
+  chrome.storage.local.get(["modoNarrador"], (data) => {
+    if (data?.modoNarrador && modoNarrador) {
+      modoNarrador.value = data.modoNarrador;
+    }
   });
 
-  // === Guardar configuraciones + notificar al content script ===
+  // ---------------- Guardar modo de lectura ----------------
+
   modoNarrador?.addEventListener("change", () => {
-    chrome.storage.local.set({ modoNarrador: modoNarrador.value }, notificarCambio);
+    chrome.storage.local.set(
+      { modoNarrador: modoNarrador.value },
+      notifyContentScript
+    );
   });
 
-  fuenteSub?.addEventListener("change", () => {
-    chrome.storage.local.set({ fuenteSub: fuenteSub.value }, notificarCambio);
-  });
+  // ---------------- Reporte de errores ----------------
 
-  selectorTrack?.addEventListener("change", () => {
-    const idx = parseInt(selectorTrack.value, 10);
-    chrome.storage.local.set({ trackIndex: idx }, () => {
-      notificarCambio();
-      withActiveTab((tabId) => {
-        chrome.tabs.sendMessage(tabId, { action: "setTrack", index: idx }, () => {
-          void chrome.runtime.lastError;
-        });
-      });
-    });
-  });
-
-  // === Obtener tracks desde content script ===
-  withActiveTab((tabId) => {
-    chrome.tabs.sendMessage(tabId, { type: "getTracks" }, (response) => {
-      const err = chrome.runtime.lastError;
-      if (err) {
-        if (selectorTrack) {
-          selectorTrack.innerHTML = "";
-          const opt = document.createElement("option");
-          opt.value = "0";
-          opt.textContent = "Abrí un video y activá la extensión";
-          selectorTrack.appendChild(opt);
-          selectorTrack.disabled = true;
-        }
-        return;
-      }
-
-      const tracks = response?.tracks || [];
-      if (!selectorTrack) return;
-
-      selectorTrack.innerHTML = "";
-      selectorTrack.disabled = !tracks.length;
-
-      if (!tracks.length) {
-        const opt = document.createElement("option");
-        opt.value = "0";
-        opt.textContent = "Sin pistas";
-        selectorTrack.appendChild(opt);
-        return;
-      }
-
-      tracks.forEach((track, index) => {
-        const option = document.createElement("option");
-        option.value = String(index);
-        option.textContent = track.label || `Pista ${index + 1}`;
-        selectorTrack.appendChild(option);
-      });
-
-      chrome.storage.local.get("trackIndex", (data) => {
-        const idx = (typeof data?.trackIndex !== "undefined") ? String(data.trackIndex) : "0";
-        if (selectorTrack.querySelector(`option[value="${idx}"]`)) selectorTrack.value = idx;
-      });
-    });
-  });
-
-  // === Reporte -> GitHub Issue prellenado ===
   function inferPlatformFromUrl(url) {
     try {
-      const u = new URL(url);
-      const h = (u.hostname || "").toLowerCase();
-      const p = u.pathname || "";
-
+      const h = new URL(url).hostname.toLowerCase();
       if (h.includes("netflix")) return "netflix";
-      if (h.includes("disneyplus") || h.includes("disney")) return "disney";
-      if (h.includes("hbomax") || h === "max.com" || h.endsWith(".max.com") || h.includes("play.hbomax.com")) return "max";
-      if (h.includes("youtube") || h.includes("youtu.be")) return "youtube";
-      if (h.includes("primevideo.com")) return "prime";
-      if ((h === "amazon.com" || h.endsWith(".amazon.com")) && p.startsWith("/gp/video")) return "prime";
-      if (h.includes("paramountplus")) return "paramount";
-      if (h.includes("flow.com.ar")) return "flow";
-
+      if (h.includes("disney")) return "disney";
+      if (h.includes("max")) return "max";
+      if (h.includes("primevideo")) return "prime";
+      if (h.includes("paramount")) return "paramount";
+      if (h.includes("flow")) return "flow";
       return "generic";
     } catch {
       return "generic";
-    }
-  }
-
-  function safeLogLine(l) {
-    try {
-      const ts = l.ts || "";
-      const lvl = l.level || "";
-      let msg = l.msg || "";
-      if (!msg) msg = JSON.stringify(l);
-      msg = String(msg).replace(/\s+/g, " ").trim();
-      if (msg.length > 400) msg = msg.slice(0, 400) + "…";
-      return `[${ts}] ${lvl}: ${msg}`;
-    } catch {
-      return "[log inválido]";
     }
   }
 
   function buildIssueBody(reporte) {
     const lines = [];
+
     lines.push("## Descripción");
     lines.push(reporte.mensaje);
     lines.push("");
-    lines.push("## Info");
+
+    lines.push("## Información");
     lines.push(`- Fecha: ${reporte.fecha}`);
-    lines.push(`- Versión: ${reporte.version || "(desconocida)"}`);
-    lines.push(`- Plataforma: ${reporte.platform || "(desconocida)"}`);
-    lines.push(`- URL: ${reporte.url || "(no disponible)"}`);
-    lines.push(`- Modo: ${reporte.modoNarrador || "(n/a)"}`);
-    lines.push(`- Fuente: ${reporte.fuenteSub || "(n/a)"}`);
-    lines.push(`- Track index: ${String(reporte.trackIndex ?? "(n/a)")}`);
-    lines.push(`- Navegador/OS: ${reporte.ua || "(n/a)"}`);
+    lines.push(`- Versión: ${reporte.version}`);
+    lines.push(`- Plataforma: ${reporte.platform}`);
+    lines.push(`- URL: ${reporte.url}`);
+    lines.push(`- Modo de lectura: ${reporte.modoNarrador}`);
+    lines.push(`- Navegador / SO: ${reporte.ua}`);
     lines.push("");
 
     if (reporte.logs?.length) {
-      lines.push("## Logs (últimos)");
-      lines.push("```");
-      for (const l of reporte.logs) lines.push(safeLogLine(l));
-      lines.push("```");
-    } else {
       lines.push("## Logs");
-      lines.push("_El usuario no adjuntó logs._");
+      lines.push("```");
+      reporte.logs.forEach(l => lines.push(String(l.msg || l)));
+      lines.push("```");
     }
+
     return lines.join("\n");
   }
 
   function openGithubIssue(reporte) {
-    const short = (reporte.mensaje || "Problema").replace(/\s+/g, " ").trim().slice(0, 70);
-    const title = encodeURIComponent(`Bug: ${reporte.platform || "sitio"} — ${short}`);
-    const body = encodeURIComponent(buildIssueBody(reporte).slice(0, 7000)); // cap para URL
+    const title = encodeURIComponent(
+      `Bug: ${reporte.platform} — lectura de subtítulos`
+    );
+
+    const body = encodeURIComponent(
+      buildIssueBody(reporte).slice(0, 7000)
+    );
+
     const url = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/issues/new?title=${title}&body=${body}`;
     chrome.tabs.create({ url });
   }
@@ -183,35 +115,33 @@ document.addEventListener("DOMContentLoaded", () => {
   enviarReporte?.addEventListener("click", () => {
     const mensaje = (reporteError?.value || "").trim();
     if (!mensaje) {
-      alert("Por favor, escribí una descripción del problema.");
+      alert("Por favor, describí el problema encontrado.");
       return;
     }
 
     const reporte = {
       mensaje,
       fecha: new Date().toISOString(),
-      version: chrome.runtime.getManifest().version || "",
-      modoNarrador: modoNarrador?.value || "",
-      fuenteSub: fuenteSub?.value || "",
-      trackIndex: selectorTrack ? parseInt(selectorTrack.value, 10) : undefined,
+      version: chrome.runtime.getManifest().version,
+      modoNarrador: modoNarrador?.value || "desconocido",
       url: "",
       platform: "",
-      ua: navigator.userAgent || ""
+      ua: navigator.userAgent
     };
 
-    withActiveTab((tabId, tab) => {
-      reporte.url = tab?.url || "";
+    withActiveTab((_, tab) => {
+      reporte.url = tab.url || "";
       reporte.platform = inferPlatformFromUrl(reporte.url);
 
       if (permitirEnvioLogs?.checked) {
         chrome.storage.local.get("kathLogs", (data) => {
-          reporte.logs = (data?.kathLogs || []).slice(-120);
+          reporte.logs = (data?.kathLogs || []).slice(-100);
           openGithubIssue(reporte);
-          if (reporteError) reporteError.value = "";
+          reporteError.value = "";
         });
       } else {
         openGithubIssue(reporte);
-        if (reporteError) reporteError.value = "";
+        reporteError.value = "";
       }
     });
   });

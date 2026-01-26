@@ -1,12 +1,18 @@
 {
   "manifest_version": 3,
   "name": "KathWare SubtitleReader",
-  "description": "Extensión de accesibilidad que lee subtítulos, transcripciones y traducciones en tiempo real con lectores de pantalla, sintetizadores de voz y líneas braille. Incluye controles accesibles cuando una plataforma no es usable.",
+  "description": "Extensión de accesibilidad que lee subtítulos en tiempo real mediante lector de pantalla o voz del sistema. Detecta automáticamente la mejor fuente disponible y adapta reproductores poco accesibles.",
   "version": "2.0.0",
   "author": "Katherine Vargas (KathWare)",
 
-  "permissions": ["storage", "tabs"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+
+  "host_permissions": [
+    "<all_urls>"
+  ],
 
   "background": {
     "service_worker": "background/background.js"
