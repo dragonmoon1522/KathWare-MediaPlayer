@@ -1,12 +1,24 @@
 // ====================================================
 // KathWare SubtitleReader - kwsr.visual.js
-// - VISUAL engine: detecta texto “en pantalla” vía selectores por plataforma
+// ====================================================
 //
-// Fix anti-spam universal:
-// - Observer + Poll NO duplican: si observer está activo, poll solo fallback
-// - Scheduler con RAF (debounce por frame) + dirty flag
-// - Dedupe por (texto + key contenedor) + ventana temporal
-// - Permite repeticiones legítimas (si pasa cierto tiempo)
+// ¿Qué hace este módulo?
+// - Lee subtítulos “VISUALES”: texto renderizado en el DOM (spans/divs).
+//
+// ¿Por qué existe?
+// - Muchas plataformas NO exponen tracks accesibles via video.textTracks.
+// - O exponen tracks “fantasma” sin cues útiles.
+// - Entonces necesitamos un plan B: leer lo que se ve en pantalla.
+//
+// Cómo funciona (idea simple):
+// 1) Elegimos un selector CSS candidato (según plataforma).
+// 2) Observamos cambios en el DOM (MutationObserver).
+// 3) Cuando cambia algo, leemos el texto y lo mandamos a KWSR.voice.
+// 4) Tenemos dedupe fuerte para no leer lo mismo 2-10 veces.
+//
+// Importante:
+// - Este módulo NO crea UI.
+// - Este módulo NO usa TTS directamente: delega en KWSR.voice.
 // ====================================================
 
 (() => {
@@ -17,17 +29,45 @@
   const CFG = KWSR.CFG;
   const { normalize } = KWSR.utils;
 
+  // Debug opt-in: CFG.debugVisual = true (por consola con KWSR_CMD si querés)
   const DEBUG = () => !!(CFG?.debug && CFG?.debugVisual);
 
+  // ------------------------------------------------------------
+  // Helpers de plataforma / capabilities
+  // ------------------------------------------------------------
   function platform() {
     return KWSR.platforms?.getPlatform?.() || "generic";
   }
+
   function caps() {
     const p = platform();
     return KWSR.platforms?.platformCapabilities?.(p) || {};
   }
 
-  // -------------------- Anti “Audio/Subtítulos + idiomas” (general) --------------------
+  // ------------------------------------------------------------
+  // Guardas: NO leer nuestra propia UI (overlay/toast/live-region)
+  // Esto es CLAVE para evitar “auto-lectura” si alguna vez un selector
+  // genérico matchea cosas nuestras.
+  // ------------------------------------------------------------
+  function isInsideKathWareUI(node) {
+    try {
+      const el = node?.nodeType === 1 ? node : node?.parentElement;
+      if (!el || !el.closest) return false;
+      return !!el.closest(
+        "#kathware-overlay-root," +
+        "#kathware-overlay-panel," +
+        "#kw-toast," +
+        "#kwsr-live-region," +
+        "#kathware-live-region"
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Anti “menú de idiomas / audio / subtítulos” (ruido común)
+  // ------------------------------------------------------------
   function isLanguageMenuText(text) {
     const t = normalize(text);
     if (!t) return false;
@@ -57,55 +97,90 @@
     return false;
   }
 
+  // ------------------------------------------------------------
+  // looksLikeNoise(node, text):
+  // Filtro anti-basura para no leer UI, botones, tooltips, etc.
+  // ------------------------------------------------------------
   function looksLikeNoise(node, text) {
     const t = normalize(text);
     if (!t) return true;
 
+    // Nunca leer nuestra UI.
+    if (isInsideKathWareUI(node)) return true;
+
+    // Menús de idioma/audio/subs: ruido.
     if (isLanguageMenuText(t)) return true;
 
+    // Elementos típicos de UI interactiva: no son subtítulos.
     const tag = (node?.tagName || "").toUpperCase();
-    if (["A","BUTTON","INPUT","TEXTAREA","SELECT","LABEL"].includes(tag)) return true;
+    if (["A", "BUTTON", "INPUT", "TEXTAREA", "SELECT", "LABEL"].includes(tag)) return true;
 
+    // Reglas de longitud razonables.
     if (t.length < 2 || t.length > 420) return true;
 
+    // Clases típicas de UI flotante/alertas: ruido.
     const cls = ((node?.className || "") + " " + (node?.id || "")).toLowerCase();
     if (/toast|snack|tooltip|popover|modal|dialog|notif|banner|sr-only|screenreader-only/.test(cls)) return true;
 
     return false;
   }
 
-  // -------------------- Helpers --------------------
+  // ------------------------------------------------------------
+  // Visibilidad (especialmente útil en Disney, pero aplica en general)
+  // ------------------------------------------------------------
   function isVisible(el) {
     try {
       if (!el || !(el instanceof Element)) return false;
+
+      // Nunca “visible” si es nuestra UI.
+      if (isInsideKathWareUI(el)) return false;
+
       const style = window.getComputedStyle(el);
       if (!style) return false;
       if (style.display === "none" || style.visibility === "hidden") return false;
+
       const opacity = parseFloat(style.opacity || "1");
       if (opacity <= 0.01) return false;
+
       const r = el.getBoundingClientRect?.();
       if (!r) return true;
       if (r.width < 2 && r.height < 2) return false;
+
       return true;
     } catch {
       return false;
     }
   }
 
+  // ------------------------------------------------------------
+  // Selectores por plataforma (vienen del módulo platforms)
+  // ------------------------------------------------------------
   function getSelectors() {
     const p = platform();
     return KWSR.platforms?.platformSelectors?.(p) || [];
   }
 
   function getFreshNodesBySelector(sel) {
-    try { return Array.from(document.querySelectorAll(sel)); } catch { return []; }
+    try {
+      // Importante: filtramos nuestros nodos de UI acá también.
+      return Array.from(document.querySelectorAll(sel)).filter(n => !isInsideKathWareUI(n));
+    } catch {
+      return [];
+    }
   }
 
-  // “key” para distinguir contenedor de captions sin depender del texto
+  // ------------------------------------------------------------
+  // containerKeyForNode:
+  // “Clave” del contenedor de captions para diferenciar dónde salió el texto.
+  // Sirve para dedupe (texto igual, contenedor distinto = puede ser otra cosa).
+  // ------------------------------------------------------------
   function containerKeyForNode(n) {
     try {
       const el = n?.nodeType === 1 ? n : n?.parentElement;
       if (!el) return "no-el";
+
+      // Nunca key de nuestra UI.
+      if (isInsideKathWareUI(el)) return "kathware-ui";
 
       const wrap =
         el.closest?.(
@@ -122,22 +197,53 @@
     }
   }
 
-  function smartJoin(lines) {
-    if (!lines || !lines.length) return "";
-    let result = lines[0];
+  // ------------------------------------------------------------
+  // smartJoinLines:
+  // Une líneas/pedazos de subtítulos de forma “humana”.
+  //
+  // Cambio importante:
+  // - Siempre asegura un espacio entre palabras si corresponde.
+  // - Evita casos tipo "limpiamosel" cuando la plataforma separa nodos raro.
+  // ------------------------------------------------------------
+  function smartJoinLines(parts) {
+    if (!parts || !parts.length) return "";
 
-    for (let i = 1; i < lines.length; i++) {
-      const prev = result.trim();
-      const curr = lines[i];
+    let out = "";
 
-      if (/[.!?…]$/.test(prev)) { result = prev + " " + curr; continue; }
-      if (prev.length < 40 && curr.length < 40) { result = prev + ", " + curr; continue; }
-      result = prev + " " + curr;
+    for (let i = 0; i < parts.length; i++) {
+      const chunk = normalize(parts[i]);
+      if (!chunk) continue;
+
+      if (!out) {
+        out = chunk;
+        continue;
+      }
+
+      const prev = out;
+      const lastChar = prev.slice(-1);
+      const firstChar = chunk.slice(0, 1);
+
+      // Si ambos lados son letras/números, metemos un espacio seguro.
+      const needSpace =
+        /[0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(lastChar) &&
+        /[0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(firstChar);
+
+      // Si el anterior termina con puntuación fuerte, también separo con espacio.
+      const strongPunct = /[.!?…]$/.test(prev.trim());
+
+      out = prev.trim() + (strongPunct || needSpace ? " " : "") + chunk;
     }
 
-    return normalize(result);
+    return normalize(out);
   }
 
+  // ------------------------------------------------------------
+  // readTextFromNodes(nodes):
+  // - Lee texto de una lista de nodos candidatos.
+  // - Filtra ruido.
+  // - Deduplica piezas exactas dentro del mismo frame.
+  // - Devuelve: { text, key }
+  // ------------------------------------------------------------
   function readTextFromNodes(nodes, p) {
     if (!nodes?.length) return { text: "", key: "" };
 
@@ -147,6 +253,10 @@
     for (const n of nodes) {
       if (!n) continue;
 
+      // Nunca leer nuestra UI.
+      if (isInsideKathWareUI(n)) continue;
+
+      // Disney: gate por visibilidad (porque rompe el DOM a lo bestia).
       if (p === "disney" && !isVisible(n)) continue;
 
       const raw = n.textContent;
@@ -162,6 +272,7 @@
 
     if (!parts.length) return { text: "", key: "" };
 
+    // Uniq “exacto” (antes del join final).
     const uniq = [];
     const seen = new Set();
     for (const x of parts) {
@@ -170,9 +281,13 @@
       uniq.push(x);
     }
 
-    return { text: smartJoin(uniq), key: key || "no-key" };
+    return { text: smartJoinLines(uniq), key: key || "no-key" };
   }
 
+  // ------------------------------------------------------------
+  // pickBestSelector:
+  // Encuentra el primer selector que “devuelva texto real”.
+  // ------------------------------------------------------------
   function pickBestSelector(p) {
     const selectors = getSelectors();
     for (const sel of selectors) {
@@ -185,31 +300,65 @@
     return "";
   }
 
-  // -------------------- Observer control --------------------
+  // ------------------------------------------------------------
+  // Dedupe VISUAL (robusto):
+  // Algunas plataformas re-renderizan el mismo subtítulo varias veces
+  // con micro-diferencias (espacios, signos, separadores).
+  //
+  // Solución:
+  // - fingerprintStrict: muy literal (normaliza fuerte + min cambios)
+  // - fingerprintLoose: ignora signos comunes y separadores
+  //
+  // Si coincide dentro de una ventana temporal => NO hablar.
+  // ------------------------------------------------------------
+  function fpStrict(text) {
+    return normalize(text)
+      .replace(/\u00A0/g, " ")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  function fpLoose(text) {
+    return normalize(text)
+      .replace(/\u00A0/g, " ")
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      .replace(/[\/|·•–—]+/g, " ")
+      .replace(/[.,;:!?¡¿"“”'’()\[\]{}]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  // ------------------------------------------------------------
+  // Observer control
+  // ------------------------------------------------------------
   function stopVisualObserver() {
     try { S.visualObserver?.disconnect?.(); } catch {}
     S.visualObserver = null;
     S.visualObserverActive = false;
 
-    // scheduler flags
+    // Scheduler flags
     S._visualScheduled = false;
     S.visualDirty = false;
     S.visualDirtyAt = 0;
 
-    // dedupe (visual-only)
+    // Dedupe visual-only
     S._visualLastAt = 0;
     S._visualLastText = "";
     S._visualLastKey = "";
+    S._visualLastStrict = "";
+    S._visualLastLoose = "";
   }
 
-  // RAF scheduler: 1 lectura por frame si hubo mutaciones
+  // RAF scheduler: 1 lectura por frame si hubo mutaciones.
   function requestVisualFrame(reasonNode) {
     if (S._visualScheduled) return;
     S._visualScheduled = true;
 
     requestAnimationFrame(() => {
       S._visualScheduled = false;
-      // Consumimos dirty dentro del tick
       pollVisualTick(true, reasonNode);
     });
   }
@@ -217,7 +366,10 @@
   function scheduleVisualRead(reasonNode) {
     if (S.effectiveFuente !== "visual") return;
 
-    // Disney gating: si la mutación no toca hive-line, ignoramos
+    // Nunca reaccionar a mutaciones causadas por nuestra UI.
+    if (reasonNode && isInsideKathWareUI(reasonNode)) return;
+
+    // Disney gating extra: si la mutación no toca subtítulos, ignoramos
     const p = platform();
     if (p === "disney" && reasonNode) {
       try {
@@ -234,6 +386,12 @@
     requestVisualFrame(reasonNode);
   }
 
+  // ------------------------------------------------------------
+  // startVisual:
+  // - Elige selectores
+  // - Elige “mejor selector”
+  // - Prende observer (doc o body según caps)
+  // ------------------------------------------------------------
   function startVisual() {
     const p = platform();
     S.visualSelectors = getSelectors();
@@ -241,7 +399,7 @@
 
     stopVisualObserver();
 
-    const useDocObserver = !!caps().visualDocObserver; // si algún día querés cap por plataforma
+    const useDocObserver = !!caps().visualDocObserver;
 
     try {
       S.visualObserver = new MutationObserver((mutations) => {
@@ -252,6 +410,9 @@
           if (m.target) { reasonNode = m.target; break; }
           if (m.addedNodes && m.addedNodes[0]) { reasonNode = m.addedNodes[0]; break; }
         }
+
+        // Si la mutación fue dentro de nuestra UI, no hacemos nada.
+        if (reasonNode && isInsideKathWareUI(reasonNode)) return;
 
         scheduleVisualRead(reasonNode);
       });
@@ -275,19 +436,27 @@
     KWSR.overlay?.updateOverlayStatus?.();
   }
 
-  // -------------------- Poll tick (fallback + dedupe) --------------------
+  // ------------------------------------------------------------
+  // pollVisualTick:
+  // - Si observer está activo, poll es SOLO fallback (no habla).
+  // - Si viene del observer, solo lee si hubo “dirty”.
+  // - Aplica dedupe robusto.
+  // ------------------------------------------------------------
   function pollVisualTick(fromObserver = false, reasonNode = null) {
     if (!KWSR.voice?.shouldReadNow?.()) return;
     if (S.effectiveFuente !== "visual") return;
 
-    // ✅ si no viene del observer y el observer está activo => fallback puro (no habla)
+    // Si el tick NO viene del observer y el observer está activo: no hacemos nada.
     if (!fromObserver && S.visualObserverActive) return;
 
-    // ✅ si viene del observer, solo leemos si hubo dirty
+    // Si viene del observer pero no hubo cambios “relevantes”: no hacemos nada.
     if (fromObserver) {
       if (!S.visualDirty) return;
       S.visualDirty = false;
     }
+
+    // Si la mutación viene de nuestra UI, ignorar.
+    if (reasonNode && isInsideKathWareUI(reasonNode)) return;
 
     const p = platform();
     if (!S.visualSelectors) S.visualSelectors = getSelectors();
@@ -301,19 +470,26 @@
     const { text, key } = readTextFromNodes(nodes, p);
     if (!text) return;
 
-    // ----- Dedupe robusto -----
+    // ----- Dedupe VISUAL robusto -----
     const now = performance.now();
 
-    const minRepeatMs = 750;
-    const allowRepeatAfterMs = 1800;
+    // Ventanas temporales:
+    // - minRepeatMs: no repetir “inmediato”
+    // - allowRepeatAfterMs: permitir repetir si pasó bastante tiempo
+    const minRepeatMs = 700;
+    const allowRepeatAfterMs = 1700;
 
-    const sameText = text === (S._visualLastText || "");
-    const sameKey  = key && key === (S._visualLastKey || "");
+    const strict = fpStrict(text);
+    const loose  = fpLoose(text);
 
-    if (sameText && sameKey) {
+    const sameKey = key && key === (S._visualLastKey || "");
+    const sameStrict = strict && strict === (S._visualLastStrict || "");
+    const sameLoose  = loose  && loose  === (S._visualLastLoose  || "");
+
+    if ((sameStrict || sameLoose) && sameKey) {
       const dt = now - (S._visualLastAt || 0);
       if (dt < minRepeatMs) {
-        if (DEBUG()) KWSR.log?.("VISUAL dedupe (rerender)", { dt: Math.round(dt), text });
+        if (DEBUG()) KWSR.log?.("VISUAL dedupe (fast)", { dt: Math.round(dt), text });
         return;
       }
       if (dt < allowRepeatAfterMs) {
@@ -322,18 +498,29 @@
       }
     }
 
-    if (!fromObserver && text === S.lastVisualSeen) return;
-    S.lastVisualSeen = text;
+    // Extra: dedupe global visualSeen (para evitar loops raros sin key estable)
+    // (Usamos strict como valor estable en vez del texto crudo.)
+    if (!fromObserver && strict && strict === S.lastVisualSeen) return;
+    S.lastVisualSeen = strict || text;
 
+    // Guardar estado para dedupe visual-only
     S._visualLastText = text;
     S._visualLastKey = key || "";
     S._visualLastAt = now;
+    S._visualLastStrict = strict;
+    S._visualLastLoose = loose;
 
     if (DEBUG()) KWSR.log?.("VISUAL speak", { selector: S.visualSelectorUsed, key, fromObserver, text });
 
+    // Delegamos dedupe final y salida (TTS/live region) al módulo voice.
     KWSR.voice?.leerTextoAccesible?.(text);
   }
 
+  // ------------------------------------------------------------
+  // visualReselectTick:
+  // Re-evalúa qué selector es “mejor” (por si el DOM cambió fuerte).
+  // Si cambia, reinicia observer.
+  // ------------------------------------------------------------
   function visualReselectTick() {
     const p = platform();
     const next = pickBestSelector(p);
@@ -343,10 +530,21 @@
     }
   }
 
+  // Export público del módulo
   KWSR.visual = {
     startVisual,
     stopVisualObserver,
     pollVisualTick,
     visualReselectTick
   };
+
+  /*
+  ===========================
+  Cambios aplicados (resumen)
+  ===========================
+  - FIX: Nunca leer nodos dentro de la UI de KathWare (overlay/toast/live region).
+  - FIX: Dedupe VISUAL robusto (fingerprint strict/loose + key + ventanas temporales).
+  - FIX: Unión de líneas más segura (evita “palabras pegadas” cuando el DOM separa nodos).
+  - Se mantiene: Observer + Poll fallback (poll no habla si observer está activo).
+  */
 })();
