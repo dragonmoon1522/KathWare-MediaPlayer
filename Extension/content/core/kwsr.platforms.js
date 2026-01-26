@@ -2,27 +2,22 @@
 // KathWare SubtitleReader - kwsr.platforms.js
 // - Detección de plataforma por hostname
 // - Labels amigables
-// - Selectores VISUAL por plataforma (con fallback universal)
+// - Selectores VISUAL por plataforma
 // - Capabilities:
-//    - keepAlive: revelar controles que se esconden
-//    - nonAccessibleFixes: autolabel + menús audio/subs
-//    - visualDocObserver: visual engine observa documentElement (mejor para DOM que se recrea)
-// - Debug:
-//    - CFG.debugVisual: habilita selectores "agresivos" y logs extra desde visual.js
+//    - keepAlive
+//    - nonAccessibleFixes
+//    - visualDocObserver (solo donde hace falta, ej Disney)
+//    - freezeWhenTimeNotMoving (Netflix: evita loop cuando está pausado/idle)
 // ====================================================
 
 (() => {
   const KWSR = window.KWSR;
   if (!KWSR || KWSR.platforms) return;
 
-  function host() {
-    return (location.hostname || "").toLowerCase();
-  }
+  function host() { return (location.hostname || "").toLowerCase(); }
 
   function getPlatform() {
     const h = host();
-
-    // --- Streaming / Video ---
     if (h.includes("netflix")) return "netflix";
     if (h.includes("disneyplus") || h === "www.disneyplus.com" || h.includes("disney")) return "disney";
     if (h === "max.com" || h.endsWith(".max.com") || h.includes("play.hbomax.com") || h.includes("hbomax")) return "max";
@@ -41,12 +36,9 @@
     if (h.includes("vimeo")) return "vimeo";
     if (h.includes("twitch")) return "twitch";
     if (h.includes("flow.com.ar")) return "flow";
-
-    // --- Meetings / Collaboration (para el futuro) ---
     if (h.includes("teams.microsoft") || h.includes("teams.live") || h.includes("teams.microsoft.com")) return "teams_web";
     if (h.includes("zoom.us")) return "zoom_web";
     if (h.includes("meet.google.com")) return "google_meet";
-
     return "generic";
   }
 
@@ -77,198 +69,71 @@
     })[p] || "Sitio";
   }
 
-  // Capabilities por plataforma
   function platformCapabilities(p) {
     const caps = {
       keepAlive: false,
       nonAccessibleFixes: false,
-      visualDocObserver: false
+      visualDocObserver: false,
+      freezeWhenTimeNotMoving: false
     };
 
-    // Plataformas donde el DOM de captions/control se recrea mucho → conviene observar documentElement
-    if (p === "disney" || p === "netflix" || p === "max" || p === "prime" || p === "paramount" || p === "hulu" || p === "peacock" || p === "twitch") {
-      caps.visualDocObserver = true;
-    }
-
-    if (p === "netflix" || p === "max" || p === "disney" || p === "prime" || p === "paramount" || p === "hulu" || p === "peacock") {
+    if (["netflix","max","disney","prime","paramount","hulu","peacock"].includes(p)) {
       caps.keepAlive = true;
     }
 
-    if (p === "flow") {
+    if (p === "flow" || p === "twitch") {
       caps.keepAlive = true;
       caps.nonAccessibleFixes = true;
-      caps.visualDocObserver = true;
     }
 
-    if (p === "twitch") {
-      caps.keepAlive = true;
-      caps.nonAccessibleFixes = true;
-      caps.visualDocObserver = true;
-    }
+    // Disney recrea DOM a lo bestia → doc observer ayuda
+    if (p === "disney") caps.visualDocObserver = true;
+
+    // Netflix puede mutar captions aun pausado → congelar si el tiempo no avanza
+    if (p === "netflix") caps.freezeWhenTimeNotMoving = true;
 
     return caps;
   }
 
-  // -------------------- Selectores universales (fallback) --------------------
-  // Estos son "agresivos" pero filtrables por visual.js (noise filter + menus).
-  // Se usan SIEMPRE al final, y antes si CFG.debugVisual===true.
-  function universalVisualSelectors() {
-    return [
-      // ARIA / roles típicos de captions
-      "[aria-live='polite']",
-      "[aria-live='assertive']",
-      "[role='status']",
-      "[role='log']",
-
-      // Clases genéricas (muchas plataformas usan substring)
-      "[class*='subtitle']",
-      "[class*='subtitles']",
-      "[class*='caption']",
-      "[class*='captions']",
-      "[class*='timedtext']",
-      "[class*='timed-text']",
-      "[class*='texttrack']",
-      "[class*='text-track']",
-      "[class*='cc']",
-
-      // data-testid genérico
-      "[data-testid*='subtitle']",
-      "[data-testid*='caption']",
-      "[data-testid*='timed']"
-    ];
-  }
-
-  // -------------------- Selectores por plataforma --------------------
   function platformSelectors(p) {
-    const debugVisual = !!KWSR?.CFG?.debugVisual;
+    if (p === "flow") return [".theoplayer-ttml-texttrack-", ".theoplayer-texttracks", ".theoplayer-texttracks *"];
 
-    // Insert helper: si debugVisual, ponemos universales arriba también
-    const addDebugHead = (arr) => debugVisual ? [...universalVisualSelectors(), ...arr] : arr;
-    const addUniversalTail = (arr) => [...arr, ...universalVisualSelectors()];
-
-    if (p === "flow") {
-      return addUniversalTail(addDebugHead([
-        ".theoplayer-ttml-texttrack-",
-        ".theoplayer-texttracks",
-        ".theoplayer-texttracks *",
-        "p span",
-        "p br"
-      ]));
-    }
-
-    if (p === "max") {
-      return addUniversalTail(addDebugHead([
-        // Estructura real que pegaste
-        "[data-testid='cueBoxRowTextCue']",
-        "[data-testid*='cueBoxRowTextCue']",
-        "[class*='CaptionWindow'] [data-testid*='cueBoxRowTextCue']",
-        "[class*='TextCue']"
-      ]));
-    }
+    if (p === "max") return ["[data-testid='cueBoxRowTextCue']", "[data-testid*='cueBoxRowTextCue']", "[class*='TextCue']"];
 
     if (p === "netflix") {
-      return addUniversalTail(addDebugHead([
-        ".player-timedtext-text-container",
-        ".player-timedtext",
+      // 👇 más “leafy”: buscamos los spans del timedtext, no contenedores gigantes
+      return [
+        ".player-timedtext-text-container span",
+        ".player-timedtext span",
         "span.player-timedtext-text",
-        // Netflix suele tener wrappers que cambian; data-uia a veces salva
-        "div[data-uia*='subtitle']",
-        "div[data-uia*='captions']",
-        // algunos builds meten “timedText” en otros contenedores
-        "[class*='timedtext']",
-        "[class*='timedText']"
-      ]));
+        "div[data-uia*='subtitle'] span",
+        "div[data-uia*='captions'] span"
+      ];
     }
 
     if (p === "disney") {
-      return addUniversalTail(addDebugHead([
-        // Winner real-world: líneas hive
+      return [
         ".hive-subtitle-renderer-line",
-        "[class*='hive-subtitle-renderer-line']",
         "[class*='hive-subtitle']",
-        "[class*='hiveSubtitle']"
-      ]));
-    }
-
-    if (p === "youtube") {
-      return addUniversalTail(addDebugHead([
-        ".ytp-caption-segment",
-        ".captions-text .caption-visual-line",
-        ".ytp-caption-window-container",
-        ".caption-window"
-      ]));
-    }
-
-    if (p === "prime") {
-      return addUniversalTail(addDebugHead([
-        "[class*='atvwebplayersdk-captions']",
-        "[class*='atvwebplayersdk-texttrack']",
-        "[class*='captions']",
         "[class*='subtitle']",
-        "[data-testid*='subtitle']"
-      ]));
-    }
-
-    if (p === "paramount") {
-      return addUniversalTail(addDebugHead([
         "[class*='caption']",
-        "[class*='subtitles']",
-        "[class*='subtitle']"
-      ]));
-    }
-
-    if (p === "crunchyroll") {
-      return addUniversalTail(addDebugHead([
-        "[class*='subtitle']",
-        "[class*='subtitles']",
-        "[class*='caption']",
-        "[class*='captions']"
-      ]));
-    }
-
-    if (p === "appletv") {
-      return addUniversalTail(addDebugHead([
-        "[class*='caption']",
-        "[class*='subtitles']",
-        "[class*='subtitle']"
-      ]));
-    }
-
-    if (p === "twitch") {
-      return addUniversalTail(addDebugHead([
-        "[class*='captions']",
-        "[class*='subtitle']",
-        "[class*='caption']"
-      ]));
-    }
-
-    if (p === "dailymotion" || p === "vimeo" || p === "mubi" || p === "plutotv" || p === "tubi" || p === "viki" || p === "hulu" || p === "peacock") {
-      return addUniversalTail(addDebugHead([
-        ".plyr__caption",
-        ".flirc-caption"
-      ]));
-    }
-
-    if (p === "teams_web" || p === "zoom_web" || p === "google_meet") {
-      return addUniversalTail(addDebugHead([
         "[aria-live='polite']",
-        "[role='status']",
-        "[role='log']"
-      ]));
+        "[role='status']"
+      ];
     }
 
-    return addUniversalTail(addDebugHead([
+    if (p === "youtube") return [".ytp-caption-segment", ".captions-text .caption-visual-line", ".ytp-caption-window-container"];
+
+    return [
       ".plyr__caption",
-      ".flirc-caption"
-    ]));
+      ".flirc-caption",
+      "[class*='subtitle']",
+      "[class*='caption']",
+      "[class*='cc']",
+      "[aria-live='polite']",
+      "[role='status']"
+    ];
   }
 
-  KWSR.platforms = {
-    getPlatform,
-    platformLabel,
-    platformCapabilities,
-    platformSelectors,
-    // export útil para debug / inspección
-    universalVisualSelectors
-  };
+  KWSR.platforms = { getPlatform, platformLabel, platformCapabilities, platformSelectors };
 })();
