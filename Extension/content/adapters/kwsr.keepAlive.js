@@ -1,26 +1,6 @@
 // ====================================================
 // KathWare SubtitleReader - kwsr.keepAlive.js
 // ====================================================
-//
-// ¿Qué es "keepAlive" acá?
-// - No tiene nada que ver con "mantener viva la extensión".
-// - Es un "despertador" del reproductor: en muchas plataformas los controles
-//   (play/pausa/tiempo/subs) se esconden si no hay movimiento de mouse.
-// - Algunas personas (y lectores de pantalla) dependen de esos controles visibles.
-//
-// ¿Qué hace este módulo?
-// - Cada cierto tiempo (timer en kwsr.pipeline.js) simula un movimiento de mouse
-//   SOBRE el video para que la UI del reproductor vuelva a aparecer.
-//
-// ¿Cuándo corre?
-// - Solo si la extensión está en ON (S.extensionActiva === true)
-// - Solo si la plataforma lo declara en platformCapabilities().keepAlive === true
-//
-// Importante:
-// - Esto NO lee subtítulos.
-// - Esto NO toca tracks.
-// - Solo emite eventos tipo mousemove/mouseover.
-// ====================================================
 
 (() => {
   const KWSR = window.KWSR;
@@ -28,11 +8,6 @@
 
   const S = KWSR.state;
 
-  // ----------------------------------------------------
-  // shouldRun()
-  // ----------------------------------------------------
-  // Decide si este adapter debe correr en esta página.
-  // ----------------------------------------------------
   function shouldRun() {
     if (!S.extensionActiva) return false;
 
@@ -41,17 +16,26 @@
     return !!caps.keepAlive;
   }
 
-  // ----------------------------------------------------
-  // tick()
-  // ----------------------------------------------------
-  // Se llama en intervalos regulares (pipeline.adaptersTimer).
-  // Simula actividad del mouse cerca del borde inferior-centro del video,
-  // que suele ser donde se "despiertan" los controles.
-  // ----------------------------------------------------
+  function fire(el, type, x, y) {
+    try {
+      if (!el) return;
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y }));
+    } catch {}
+  }
+
+  function firePointer(el, type, x, y) {
+    try {
+      if (!el) return;
+      // PointerEvent no existe en algunos contextos raros; si falla, no rompemos.
+      const Ev = window.PointerEvent;
+      if (!Ev) return;
+      el.dispatchEvent(new Ev(type, { bubbles: true, clientX: x, clientY: y, pointerType: "mouse" }));
+    } catch {}
+  }
+
   function tick() {
     if (!shouldRun()) return;
 
-    // Video principal detectado por el engine.
     const v = S.currentVideo || KWSR.video?.getMainVideo?.();
     if (!v) return;
 
@@ -59,30 +43,35 @@
       const r = v.getBoundingClientRect();
       if (!r || r.width < 20 || r.height < 20) return;
 
-      // Punto "seguro": zona inferior-central.
-      // (Si lo hacés en el centro, algunas plataformas interpretan clicks/pausa;
-      //  por eso preferimos más abajo, tipo “zona de controles”.)
       const x = r.left + r.width * 0.5;
       const y = r.top + r.height * 0.90;
 
-      // Emitimos eventos que muchas UIs usan para mostrar controles.
-      v.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: x, clientY: y }));
-      v.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: x, clientY: y }));
+      const parent = v.parentElement || null;
+
+      // 1) video
+      fire(v, "mousemove", x, y);
+      fire(v, "mouseover", x, y);
+      fire(v, "mouseenter", x, y);
+      firePointer(v, "pointermove", x, y);
+
+      // 2) parent container (muchas UIs escuchan arriba del video)
+      fire(parent, "mousemove", x, y);
+      fire(parent, "mouseover", x, y);
+      fire(parent, "mouseenter", x, y);
+      firePointer(parent, "pointermove", x, y);
+
+      // 3) document (Netflix/Max suelen escuchar acá)
+      fire(document, "mousemove", x, y);
+      fire(document, "mouseover", x, y);
+      firePointer(document, "pointermove", x, y);
+
+      // 4) window (último recurso)
+      fire(window, "mousemove", x, y);
+      firePointer(window, "pointermove", x, y);
     } catch {
-      // Silencioso: si falla, no debe romper la lectura.
+      // silencioso
     }
   }
 
-  // Exponemos el módulo
   KWSR.keepAlive = { tick };
-
-  /*
-  ===========================
-  Notas de mantenimiento
-  ===========================
-  - Este adapter se ejecuta por timer, así que debe ser liviano.
-  - No agregues querySelectorAll masivos acá.
-  - Si alguna plataforma reacciona mal a mouseover/mousemove,
-    se puede ajustar la capability por plataforma o cambiar el punto (x,y).
-  */
 })();

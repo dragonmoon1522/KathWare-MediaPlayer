@@ -1,27 +1,6 @@
 // ====================================================
 // KathWare SubtitleReader - kwsr.voice.js
 // ====================================================
-//
-// ¿Qué hace este módulo?
-// - Es el “motor de salida” accesible:
-//   1) Modo "lector": anuncia por un aria-live (live region).
-//   2) Modo "sintetizador": usa speechSynthesis (TTS del navegador).
-//   3) Modo "off": no lee.
-//
-// ¿Por qué existe?
-// - Porque no todos los usuarios quieren TTS.
-// - Porque algunos prefieren su lector de pantalla (NVDA/JAWS/TalkBack).
-// - Porque speechSynthesis puede fallar o “colgarse” en ciertos sitios.
-//
-// Qué PROBLEMA grande resolvemos acá:
-// - Repeticiones: aunque VISUAL/TRACK intenten dedupe, algunas plataformas
-//   re-renderizan y/o disparan eventos duplicados. Acá hacemos el filtro final.
-//
-// Importante:
-// - Este módulo NO busca subtítulos.
-// - Este módulo NO hace observers.
-// - Solo recibe texto “ya detectado” y decide si lo lee y cómo.
-// ====================================================
 
 (() => {
   const KWSR = window.KWSR;
@@ -31,17 +10,15 @@
   const CFG = KWSR.CFG;
   const { normalize } = KWSR.utils;
 
-  // --- Estado interno del TTS ---
   let lastSpeakAt = 0;
   let ttsBrokenUntil = 0;
   let lastTtsError = "";
   let watchdogTimer = null;
 
-  // Si querés que al fallar TTS cambie automáticamente a "lector":
   const AUTO_SWITCH_TO_READER_ON_TTS_FAIL = true;
 
   // ------------------------------------------------------------
-  // Helpers plataforma / videoTime (para anti re-render eco)
+  // Helpers plataforma / videoTime
   // ------------------------------------------------------------
   function platform() {
     try { return KWSR.platforms?.getPlatform?.() || "generic"; } catch { return "generic"; }
@@ -64,7 +41,7 @@
   }
 
   // ------------------------------------------------------------
-  // Live Region (aria-live) para modo "lector"
+  // Live Region (aria-live)
   // ------------------------------------------------------------
   function ensureLiveRegion() {
     if (S.liveRegion) return;
@@ -75,7 +52,6 @@
     div.setAttribute("aria-live", "polite");
     div.setAttribute("aria-atomic", "true");
 
-    // Offscreen (NO opacity:0; algunos SR ignoran elementos totalmente invisibles)
     Object.assign(div.style, {
       position: "fixed",
       left: "-9999px",
@@ -92,11 +68,8 @@
     S.liveRegion = div;
   }
 
-  // pushToLiveRegion:
-  // - Esta función la necesita también el toast (para feedback accesible).
   function pushToLiveRegion(text) {
     ensureLiveRegion();
-
     try {
       S.liveRegion.textContent = "";
       setTimeout(() => {
@@ -107,7 +80,7 @@
   }
 
   // ------------------------------------------------------------
-  // TTS del navegador (speechSynthesis)
+  // TTS
   // ------------------------------------------------------------
   function isTTSAvailable() {
     return (
@@ -116,9 +89,6 @@
     );
   }
 
-  // cargarVozES:
-  // - Intentamos elegir una voz española si existe.
-  // - Esto NO detecta idioma del lector de pantalla.
   function cargarVozES() {
     try {
       if (!isTTSAvailable()) return;
@@ -177,7 +147,6 @@
     }
   }
 
-  // Detecta si speechSynthesis quedó “colgado” hablando para siempre.
   function maybeUnstickTTS() {
     try {
       if (!isTTSAvailable()) return;
@@ -194,13 +163,12 @@
   }
 
   // ------------------------------------------------------------
-  // ¿Debemos leer ahora?
+  // Should read
   // ------------------------------------------------------------
   function shouldReadNow() {
     if (!S.extensionActiva) return false;
     if (!S.modoNarradorGlobal || S.modoNarradorGlobal === "off") return false;
 
-    // Ajuste defensivo: si tenemos video, no leer en pausa (evita “spam” en menús)
     try {
       const v = S.currentVideo;
       if (v && (v.paused || v.ended)) return false;
@@ -210,12 +178,8 @@
     return true;
   }
 
-  function emitToOverlay(text) {
-    try { KWSR.overlay?.updateOverlayText?.(text); } catch {}
-  }
-
   // ------------------------------------------------------------
-  // DEDUPE final (anti eco global)
+  // Fingerprints
   // ------------------------------------------------------------
   function fpStrict(text) {
     return normalize(text)
@@ -237,7 +201,50 @@
       .toLowerCase();
   }
 
-  function dedupe(raw) {
+  // ------------------------------------------------------------
+  // Delta logic (para Max rolling captions)
+  // ------------------------------------------------------------
+  function computeDelta(prevClean, currClean) {
+    const prev = normalize(prevClean);
+    const curr = normalize(currClean);
+    if (!prev || !curr) return "";
+
+    // Normalizamos espacios para comparar “prefijos”
+    const prevN = prev.replace(/\s+/g, " ").trim();
+    const currN = curr.replace(/\s+/g, " ").trim();
+
+    if (currN.length <= prevN.length) return "";
+
+    // Caso ideal: curr empieza con prev
+    if (currN.toLowerCase().startsWith(prevN.toLowerCase())) {
+      let tail = currN.slice(prevN.length).trim();
+
+      // Si quedó pegado por puntuación/guiones
+      tail = tail.replace(/^[-–—:|•]+\s*/g, "").trim();
+
+      return tail;
+    }
+
+    // Caso “casi”: loose de curr contiene loose de prev (pero quizá cambió algún signo)
+    const prevL = fpLoose(prevN);
+    const currL = fpLoose(currN);
+    if (prevL && currL && currL.startsWith(prevL) && currN.length > prevN.length) {
+      // Intento: buscar el prevN dentro de currN por coincidencia case-insensitive
+      const idx = currN.toLowerCase().indexOf(prevN.toLowerCase());
+      if (idx === 0) {
+        let tail = currN.slice(prevN.length).trim();
+        tail = tail.replace(/^[-–—:|•]+\s*/g, "").trim();
+        return tail;
+      }
+    }
+
+    return "";
+  }
+
+  // ------------------------------------------------------------
+  // Dedupe final + delta
+  // ------------------------------------------------------------
+  function dedupeAndDelta(raw) {
     const clean = normalize(raw);
     if (!clean) return "";
 
@@ -256,30 +263,22 @@
       (looseKey && looseKey === lastLoose) ||
       (lastLoose && looseKey && (lastLoose.includes(looseKey) || looseKey.includes(lastLoose)));
 
-    // ------------------------------------------------------------
-    // 0) Netflix/Max: gate adicional por tiempo de video (anti re-render lento)
-    // Si llega “lo mismo” pero el video casi no avanzó => bloquear
-    // (aunque haya pasado más tiempo real).
-    // ------------------------------------------------------------
+    // 0) Gate por videoTime (anti re-render)
     if (isRerenderPlatform() && sameTextish) {
       const tNow = getVideoTimeSec();
       const lastT = (typeof S.lastEmitVideoTimeSec === "number") ? S.lastEmitVideoTimeSec : null;
 
       if (tNow != null && lastT != null) {
         const dtVideo = Math.abs(tNow - lastT);
-        // Umbral levemente más alto que VISUAL por si llega tarde desde pipeline
-        const gate = (platform() === "max") ? 0.40 : 0.35;
-
+        const gate = (platform() === "max") ? 0.45 : 0.35;
         if (dtVideo < gate) {
-          // opcional: “actualizar” para cortar ráfagas raras
           S.lastEmitVideoTimeSec = tNow;
           return "";
         }
       }
     }
 
-    // 1) Anti-eco inmediato (doble disparo típico)
-    // Netflix/Max suelen re-renderizar con más delay: subimos un poquito SOLO ahí.
+    // 1) Anti-eco inmediato
     const baseEcho = (CFG.echoMs ?? 380);
     const echoMs = isRerenderPlatform() ? Math.max(baseEcho, 520) : baseEcho;
 
@@ -287,20 +286,49 @@
       return "";
     }
 
-    // 2) Cooldown normal (más largo si el texto es largo)
+    // 2) COOLDOWN normal
     const base = (CFG.cooldownMs ?? 650);
     const extra = Math.min(1100, strictKey.length * 12);
     const windowMs = base + extra;
 
+    // 👇 Acá viene lo lindo: Max rolling captions
+    // Si el texto nuevo contiene al anterior, hablamos SOLO el delta.
+    // Esto evita exactamente tu patrón:
+    // "Hola" -> "Hola + Está todo bien?" -> "Está todo bien? + Vine..."
+    const p = platform();
+    const canDelta = (p === "max" || p === "netflix"); // si querés solo max, dejá p==="max"
+    if (canDelta && S.lastEmitText) {
+      const tNow = getVideoTimeSec();
+      const lastT = (typeof S.lastEmitVideoTimeSec === "number") ? S.lastEmitVideoTimeSec : null;
+
+      // Solo intentamos delta si está dentro de una ventana “de la misma escena”
+      const okWindow = (tNow != null && lastT != null) ? (Math.abs(tNow - lastT) < 1.25) : (dt < 1600);
+
+      if (okWindow) {
+        const delta = computeDelta(S.lastEmitText, clean);
+        if (delta && delta.length >= 2) {
+          // Guardamos igualmente el “texto completo actual” como base para el próximo delta
+          S.lastEmitStrictKey = strictKey;
+          S.lastEmitLooseKey  = looseKey;
+          S.lastEmitAt = now;
+          S.lastEmitText = clean;
+
+          const vt = getVideoTimeSec();
+          if (vt != null) S.lastEmitVideoTimeSec = vt;
+
+          return delta; // ✅ habla solo lo nuevo
+        }
+      }
+    }
+
     if (strictKey === lastStrict && dt < windowMs) return "";
 
-    // Guardamos estado de dedupe global
+    // Guardamos estado global
     S.lastEmitStrictKey = strictKey;
     S.lastEmitLooseKey  = looseKey;
     S.lastEmitAt = now;
     S.lastEmitText = clean;
 
-    // Guardar videoTime si existe (para Netflix/Max gate)
     const vt = getVideoTimeSec();
     if (vt != null) S.lastEmitVideoTimeSec = vt;
 
@@ -308,7 +336,7 @@
   }
 
   // ------------------------------------------------------------
-  // speakTTS(text): intenta hablar con speechSynthesis
+  // speakTTS
   // ------------------------------------------------------------
   function speakTTS(text) {
     if (!isTTSAvailable()) {
@@ -324,7 +352,6 @@
     try {
       clearWatchdog();
 
-      // Anti-eco extra de TTS
       const tKey = fpStrict(text);
       if (
         tKey &&
@@ -337,7 +364,6 @@
       try { speechSynthesis.cancel?.(); } catch {}
 
       const u = new SpeechSynthesisUtterance(text);
-
       if (S.voiceES) u.voice = S.voiceES;
 
       u.lang = (S.voiceES?.lang) || "es-ES";
@@ -380,15 +406,18 @@
   }
 
   // ------------------------------------------------------------
-  // API pública: leerTextoAccesible(raw)
+  // API pública
   // ------------------------------------------------------------
   function leerTextoAccesible(raw) {
     if (!shouldReadNow()) return;
 
-    const text = dedupe(raw);
+    const text = dedupeAndDelta(raw);
     if (!text) return;
 
-    emitToOverlay(text);
+    // No re-imprimir subtítulos en pantalla (solo si se habilita explícitamente)
+    if (CFG?.overlayShowText === true) {
+      try { KWSR.overlay?.updateOverlayText?.(text); } catch {}
+    }
 
     if (S.modoNarradorGlobal === "lector") {
       pushToLiveRegion(text);
@@ -404,7 +433,6 @@
     try { hardResetTTS(); } catch {}
     try { if (S.liveRegion) S.liveRegion.textContent = ""; } catch {}
 
-    // Ajuste defensivo: limpiar dedupe global al “stop”
     S.lastEmitAt = 0;
     S.lastEmitText = "";
     S.lastEmitStrictKey = "";
@@ -415,7 +443,6 @@
     S.lastSpokenKey = "";
   }
 
-  // Export del módulo
   KWSR.voice = {
     cargarVozES,
     shouldReadNow,
@@ -423,17 +450,4 @@
     detenerLectura,
     pushToLiveRegion
   };
-
-  /*
-  ===========================
-  Cambios aplicados (resumen)
-  ===========================
-  - NEW: Plataforma (netflix/max) detectada vía KWSR.platforms.getPlatform().
-  - NEW: Gate anti-eco por video.currentTime en Netflix/Max (mismo texto + video casi igual => bloquear).
-  - NEW: echoMs más alto SOLO en Netflix/Max (por re-render lento).
-  - Se mantiene: dedupe final robusto (strict + loose + echo + cooldown adaptativo).
-  - Se mantiene: watchdog anti-freeze + fallback a lector (opcional).
-  - Se mantiene: no leer en pausa/ended (anti-spam).
-  - Se mantiene: detenerLectura() limpia dedupe global para reinicios limpios.
-  */
 })();
