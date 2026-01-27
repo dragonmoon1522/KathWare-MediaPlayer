@@ -1,6 +1,33 @@
 // ====================================================
 // KathWare SubtitleReader - kwsr.visual.js
 // ====================================================
+//
+// ¿Qué hace este módulo?
+// - Lee subtítulos “VISUALES”: texto renderizado en el DOM (spans/divs).
+//
+// ¿Por qué existe?
+// - Algunas plataformas NO exponen pistas accesibles por video.textTracks,
+//   o las exponen “vacías/ghost”. Entonces necesitamos plan B: leer lo que se ve.
+//
+// El problema real (Netflix/Max):
+// - Que el subtítulo “se vea quieto” NO significa que el DOM esté quieto.
+// - Netflix/Max re-renderizan el mismo texto varias veces:
+//     * reemplazan spans,
+//     * meten/quitan <br>,
+//     * duplican spans,
+//     * cambian nodos sin cambiar el texto visible.
+// - Si nosotros disparamos lectura por “cualquier mutación”, terminamos repitiendo.
+//
+// La solución canónica:
+// 1) Para Netflix/Max: leer un “snapshot” del CONTENEDOR de captions (bloque completo),
+//    no cada span suelto. Así no importa si hay <br> o si duplican spans.
+// 2) Gate determinístico: si el texto es el mismo y el video casi no avanzó,
+//    consideramos re-render => NO leer de nuevo.
+//
+// Importante:
+// - Este módulo NO crea UI.
+// - Este módulo NO usa TTS directo: delega a KWSR.voice.
+// ====================================================
 
 (() => {
   const KWSR = window.KWSR;
@@ -10,8 +37,12 @@
   const CFG = KWSR.CFG;
   const { normalize } = KWSR.utils;
 
+  // Debug opt-in: CFG.debugVisual = true
   const DEBUG = () => !!(CFG?.debug && CFG?.debugVisual);
 
+  // ------------------------------------------------------------
+  // Plataforma / capabilities
+  // ------------------------------------------------------------
   function platform() {
     return KWSR.platforms?.getPlatform?.() || "generic";
   }
@@ -21,6 +52,9 @@
     return KWSR.platforms?.platformCapabilities?.(p) || {};
   }
 
+  // ------------------------------------------------------------
+  // Guardas: NO leer nuestra UI (overlay/toast/live-region)
+  // ------------------------------------------------------------
   function isInsideKathWareUI(node) {
     try {
       const el = node?.nodeType === 1 ? node : node?.parentElement;
@@ -37,6 +71,9 @@
     }
   }
 
+  // ------------------------------------------------------------
+  // Anti “menú de idiomas / audio / subtítulos” (ruido común)
+  // ------------------------------------------------------------
   function isLanguageMenuText(text) {
     const t = normalize(text);
     if (!t) return false;
@@ -66,27 +103,42 @@
     return false;
   }
 
+  // ------------------------------------------------------------
+  // looksLikeNoise(node, text):
+  // Filtro anti-basura para no leer UI, botones, tooltips, etc.
+  // ------------------------------------------------------------
   function looksLikeNoise(node, text) {
     const t = normalize(text);
     if (!t) return true;
 
+    // Nunca leer nuestra UI.
     if (isInsideKathWareUI(node)) return true;
+
+    // Menús de idioma/audio/subs: ruido.
     if (isLanguageMenuText(t)) return true;
 
+    // Elementos típicos de UI interactiva: no son subtítulos.
     const tag = (node?.tagName || "").toUpperCase();
     if (["A", "BUTTON", "INPUT", "TEXTAREA", "SELECT", "LABEL"].includes(tag)) return true;
 
+    // Reglas de longitud razonables.
     if (t.length < 2 || t.length > 420) return true;
 
+    // Clases típicas de UI flotante/alertas: ruido.
     const cls = ((node?.className || "") + " " + (node?.id || "")).toLowerCase();
     if (/toast|snack|tooltip|popover|modal|dialog|notif|banner|sr-only|screenreader-only/.test(cls)) return true;
 
     return false;
   }
 
+  // ------------------------------------------------------------
+  // Visibilidad (especialmente útil en Disney, pero aplica en general)
+  // ------------------------------------------------------------
   function isVisible(el) {
     try {
       if (!el || !(el instanceof Element)) return false;
+
+      // Nunca “visible” si es nuestra UI.
       if (isInsideKathWareUI(el)) return false;
 
       const style = window.getComputedStyle(el);
@@ -106,6 +158,9 @@
     }
   }
 
+  // ------------------------------------------------------------
+  // Selectores por plataforma (vienen del módulo platforms)
+  // ------------------------------------------------------------
   function getSelectors() {
     const p = platform();
     return KWSR.platforms?.platformSelectors?.(p) || [];
@@ -119,10 +174,17 @@
     }
   }
 
+  // ------------------------------------------------------------
+  // containerKeyForNode:
+  // “Clave” del contenedor de captions.
+  // Sirve para dedupe: si viene del mismo “bloque” (misma zona del DOM).
+  // ------------------------------------------------------------
   function containerKeyForNode(n) {
     try {
       const el = n?.nodeType === 1 ? n : n?.parentElement;
       if (!el) return "no-el";
+
+      // Nunca key de nuestra UI.
       if (isInsideKathWareUI(el)) return "kathware-ui";
 
       const wrap =
@@ -140,6 +202,11 @@
     }
   }
 
+  // ------------------------------------------------------------
+  // smartJoinLines:
+  // Une pedazos de subtítulos de forma “humana”.
+  // (Lo usamos en plataformas donde el texto viene partido por spans)
+  // ------------------------------------------------------------
   function smartJoinLines(parts) {
     if (!parts || !parts.length) return "";
 
@@ -170,17 +237,70 @@
     return normalize(out);
   }
 
+  // ------------------------------------------------------------
+  // readTextFromNodes(nodes, p):
+  //
+  // Este es EL lugar clave del cambio Netflix/Max.
+  //
+  // Antes:
+  // - Leíamos textContent de spans individuales.
+  // - Si Netflix duplicaba spans o cambiaba <br>, leíamos repetido.
+  //
+  // Ahora (Netflix/Max):
+  // - Leemos el “bloque contenedor” del subtítulo:
+  //     .player-timedtext-text-container
+  // - Y hacemos snapshot con innerText (respeta <br> como salto).
+  //
+  // Resultado:
+  // - No importa si Netflix cambia el render (con <br> o sin <br>, 1 span o 2 spans),
+  //   porque el texto final visible del contenedor es el que manda.
+  // ------------------------------------------------------------
   function readTextFromNodes(nodes, p) {
     if (!nodes?.length) return { text: "", key: "" };
 
+    // ✅ Netflix/Max: snapshot del contenedor (independiente del “layout” interno)
+    if (p === "netflix" || p === "max") {
+      for (const n of nodes) {
+        const el = n?.nodeType === 1 ? n : n?.parentElement;
+        if (!el) continue;
+        if (isInsideKathWareUI(el)) continue;
+
+        // Netflix: el contenedor real suele ser player-timedtext-text-container.
+        // A veces el selector apunta a un span interno: subimos al contenedor.
+        const isNetflixContainer =
+          el.classList?.contains("player-timedtext-text-container") ||
+          el.closest?.(".player-timedtext-text-container") === el;
+
+        const cont = isNetflixContainer
+          ? el
+          : (el.closest?.(".player-timedtext-text-container") || el);
+
+        // innerText respeta <br> como salto; textContent a veces “pega” líneas.
+        let raw = "";
+        try { raw = cont.innerText || cont.textContent || ""; } catch {}
+
+        // Normalizamos: saltos de línea -> espacio.
+        const t = normalize(raw).replace(/\s*\n+\s*/g, " ").trim();
+
+        if (!t) continue;
+        if (isLanguageMenuText(t)) continue;
+        if (looksLikeNoise(cont, t)) continue;
+
+        const key = containerKeyForNode(cont);
+        return { text: t, key };
+      }
+      return { text: "", key: "" };
+    }
+
+    // Default: resto de plataformas
     const parts = [];
     let key = "";
 
     for (const n of nodes) {
       if (!n) continue;
-
       if (isInsideKathWareUI(n)) continue;
 
+      // Disney: DOM caótico → gate por visibilidad
       if (p === "disney" && !isVisible(n)) continue;
 
       const raw = n.textContent;
@@ -196,17 +316,15 @@
 
     if (!parts.length) return { text: "", key: "" };
 
-    const uniq = [];
-    const seen = new Set();
-    for (const x of parts) {
-      if (seen.has(x)) continue;
-      seen.add(x);
-      uniq.push(x);
-    }
-
-    return { text: smartJoinLines(uniq), key: key || "no-key" };
+    // Dedup y join “humano”
+    const joined = smartJoinLines(parts).replace(/\s+/g, " ").trim();
+    return { text: joined, key: key || "no-key" };
   }
 
+  // ------------------------------------------------------------
+  // pickBestSelector:
+  // Encuentra el primer selector que devuelva texto “real”
+  // ------------------------------------------------------------
   function pickBestSelector(p) {
     const selectors = getSelectors();
     for (const sel of selectors) {
@@ -219,6 +337,9 @@
     return "";
   }
 
+  // ------------------------------------------------------------
+  // Fingerprints para dedupe
+  // ------------------------------------------------------------
   function fpStrict(text) {
     return normalize(text)
       .replace(/\u00A0/g, " ")
@@ -239,6 +360,11 @@
       .toLowerCase();
   }
 
+  // ------------------------------------------------------------
+  // Tiempo de video:
+  // Lo usamos como “compuerta determinística” contra re-render:
+  // Si el video no avanzó y el texto “es el mismo”, no es un subtítulo nuevo.
+  // ------------------------------------------------------------
   function getVideoTimeSec() {
     try {
       const v = S.currentVideo || KWSR.video?.getMainVideo?.();
@@ -250,6 +376,9 @@
     }
   }
 
+  // ------------------------------------------------------------
+  // Observer control
+  // ------------------------------------------------------------
   function stopVisualObserver() {
     try { S.visualObserver?.disconnect?.(); } catch {}
     S.visualObserver = null;
@@ -260,6 +389,8 @@
     S.visualDirtyAt = 0;
   }
 
+  // Reset “memoria” del visual.
+  // Ojo: esto solo debería usarse en apagado total / nuevo video / restart.
   function resetVisualDedupe() {
     S._visualLastAt = 0;
     S._visualLastText = "";
@@ -268,9 +399,11 @@
     S._visualLastLoose = "";
     S._visualLastVideoTimeSec = null;
 
+    // compat con lógica previa
     S.lastVisualSeen = "";
   }
 
+  // RAF scheduler: 1 lectura por frame si hubo mutaciones.
   function requestVisualFrame(reasonNode) {
     if (S._visualScheduled) return;
     S._visualScheduled = true;
@@ -285,6 +418,7 @@
     if (S.effectiveFuente !== "visual") return;
     if (reasonNode && isInsideKathWareUI(reasonNode)) return;
 
+    // Disney gating extra: si la mutación no toca subtítulos, ignoramos
     const p = platform();
     if (p === "disney" && reasonNode) {
       try {
@@ -300,6 +434,11 @@
     requestVisualFrame(reasonNode);
   }
 
+  // ------------------------------------------------------------
+  // startVisual:
+  // - Elige selector “mejor”
+  // - Prende observer (doc o body según caps)
+  // ------------------------------------------------------------
   function startVisual() {
     const p = platform();
     S.visualSelectors = getSelectors();
@@ -342,6 +481,12 @@
     KWSR.overlay?.updateOverlayStatus?.();
   }
 
+  // ------------------------------------------------------------
+  // pollVisualTick:
+  // - Si observer está activo, poll es fallback (no habla por sí mismo).
+  // - Si viene del observer, solo lee si hubo “dirty”.
+  // - Aplica dedupe robusto + (Netflix/Max) dedupe por tiempo de video.
+  // ------------------------------------------------------------
   function pollVisualTick(fromObserver = false, reasonNode = null) {
     if (!KWSR.voice?.shouldReadNow?.()) return;
     if (S.effectiveFuente !== "visual") return;
@@ -371,7 +516,7 @@
     const loose  = fpLoose(text);
 
     // ------------------------------------------------------------
-    // Netflix/Max: anti re-render por tiempo de video (más “textish”, no solo ==)
+    // Netflix/Max: “compuerta determinística” anti re-render
     // ------------------------------------------------------------
     const isRerenderPlatform = (p === "netflix" || p === "max");
     const tNow = getVideoTimeSec();
@@ -389,8 +534,10 @@
       const dtVideo = Math.abs(tNow - lastT);
       const gate = (p === "max") ? 0.40 : 0.35;
 
+      // Si el video no avanzó casi nada y el texto “es el mismo”:
+      // => Netflix solo re-renderizó, NO es subtítulo nuevo.
       if (dtVideo < gate) {
-        // actualizar para adaptarse a microvariaciones y cortar ráfagas
+        // Actualizamos igual para cortar ráfagas en renderers nerviosos
         S._visualLastVideoTimeSec = tNow;
         S._visualLastStrict = strict;
         S._visualLastLoose = loose;
@@ -401,7 +548,7 @@
     }
 
     // ------------------------------------------------------------
-    // Dedupe VISUAL robusto (strict/loose + key + ventanas)
+    // Dedupe “normal” (por key + ventanas temporales)
     // ------------------------------------------------------------
     const now = performance.now();
 
@@ -424,9 +571,11 @@
       }
     }
 
+    // Fallback histórico (por si el poll corre sin observer)
     if (!fromObserver && strict && strict === S.lastVisualSeen) return;
     S.lastVisualSeen = strict || text;
 
+    // Guardar estado dedupe
     S._visualLastText = text;
     S._visualLastKey = key || "";
     S._visualLastAt = now;
@@ -437,9 +586,14 @@
 
     if (DEBUG()) KWSR.log?.("VISUAL speak", { selector: S.visualSelectorUsed, key, fromObserver, text });
 
+    // Delegamos salida final a VOICE (dedupe global + lector/TTS)
     KWSR.voice?.leerTextoAccesible?.(text);
   }
 
+  // ------------------------------------------------------------
+  // visualReselectTick:
+  // Re-evalúa selector por si el DOM cambió fuerte
+  // ------------------------------------------------------------
   function visualReselectTick() {
     const p = platform();
     const next = pickBestSelector(p);
@@ -449,6 +603,7 @@
     }
   }
 
+  // Export público
   KWSR.visual = {
     startVisual,
     stopVisualObserver,
@@ -456,4 +611,5 @@
     visualReselectTick,
     resetVisualDedupe
   };
+
 })();
