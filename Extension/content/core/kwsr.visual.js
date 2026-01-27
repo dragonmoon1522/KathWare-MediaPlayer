@@ -29,7 +29,7 @@
   const CFG = KWSR.CFG;
   const { normalize } = KWSR.utils;
 
-  // Debug opt-in: CFG.debugVisual = true (por consola con KWSR_CMD si querés)
+  // Debug opt-in: CFG.debugVisual = true
   const DEBUG = () => !!(CFG?.debug && CFG?.debugVisual);
 
   // ------------------------------------------------------------
@@ -46,8 +46,6 @@
 
   // ------------------------------------------------------------
   // Guardas: NO leer nuestra propia UI (overlay/toast/live-region)
-  // Esto es CLAVE para evitar “auto-lectura” si alguna vez un selector
-  // genérico matchea cosas nuestras.
   // ------------------------------------------------------------
   function isInsideKathWareUI(node) {
     try {
@@ -162,7 +160,6 @@
 
   function getFreshNodesBySelector(sel) {
     try {
-      // Importante: filtramos nuestros nodos de UI acá también.
       return Array.from(document.querySelectorAll(sel)).filter(n => !isInsideKathWareUI(n));
     } catch {
       return [];
@@ -172,7 +169,6 @@
   // ------------------------------------------------------------
   // containerKeyForNode:
   // “Clave” del contenedor de captions para diferenciar dónde salió el texto.
-  // Sirve para dedupe (texto igual, contenedor distinto = puede ser otra cosa).
   // ------------------------------------------------------------
   function containerKeyForNode(n) {
     try {
@@ -200,10 +196,7 @@
   // ------------------------------------------------------------
   // smartJoinLines:
   // Une líneas/pedazos de subtítulos de forma “humana”.
-  //
-  // Cambio importante:
-  // - Siempre asegura un espacio entre palabras si corresponde.
-  // - Evita casos tipo "limpiamosel" cuando la plataforma separa nodos raro.
+  // Evita "limpiamosel" cuando separan spans sin espacios.
   // ------------------------------------------------------------
   function smartJoinLines(parts) {
     if (!parts || !parts.length) return "";
@@ -223,12 +216,10 @@
       const lastChar = prev.slice(-1);
       const firstChar = chunk.slice(0, 1);
 
-      // Si ambos lados son letras/números, metemos un espacio seguro.
       const needSpace =
         /[0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(lastChar) &&
         /[0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(firstChar);
 
-      // Si el anterior termina con puntuación fuerte, también separo con espacio.
       const strongPunct = /[.!?…]$/.test(prev.trim());
 
       out = prev.trim() + (strongPunct || needSpace ? " " : "") + chunk;
@@ -239,10 +230,9 @@
 
   // ------------------------------------------------------------
   // readTextFromNodes(nodes):
-  // - Lee texto de una lista de nodos candidatos.
-  // - Filtra ruido.
-  // - Deduplica piezas exactas dentro del mismo frame.
-  // - Devuelve: { text, key }
+  // - Filtra ruido
+  // - Dedup interna de piezas exactas
+  // - Devuelve { text, key }
   // ------------------------------------------------------------
   function readTextFromNodes(nodes, p) {
     if (!nodes?.length) return { text: "", key: "" };
@@ -253,10 +243,9 @@
     for (const n of nodes) {
       if (!n) continue;
 
-      // Nunca leer nuestra UI.
       if (isInsideKathWareUI(n)) continue;
 
-      // Disney: gate por visibilidad (porque rompe el DOM a lo bestia).
+      // Disney: gate por visibilidad (DOM caótico)
       if (p === "disney" && !isVisible(n)) continue;
 
       const raw = n.textContent;
@@ -272,7 +261,6 @@
 
     if (!parts.length) return { text: "", key: "" };
 
-    // Uniq “exacto” (antes del join final).
     const uniq = [];
     const seen = new Set();
     for (const x of parts) {
@@ -301,15 +289,7 @@
   }
 
   // ------------------------------------------------------------
-  // Dedupe VISUAL (robusto):
-  // Algunas plataformas re-renderizan el mismo subtítulo varias veces
-  // con micro-diferencias (espacios, signos, separadores).
-  //
-  // Solución:
-  // - fingerprintStrict: muy literal (normaliza fuerte + min cambios)
-  // - fingerprintLoose: ignora signos comunes y separadores
-  //
-  // Si coincide dentro de una ventana temporal => NO hablar.
+  // Fingerprints para dedupe VISUAL
   // ------------------------------------------------------------
   function fpStrict(text) {
     return normalize(text)
@@ -332,24 +312,48 @@
   }
 
   // ------------------------------------------------------------
+  // Tiempo de video (para Netflix/Max anti re-render)
+  // ------------------------------------------------------------
+  function getVideoTimeSec() {
+    try {
+      const v = S.currentVideo || KWSR.video?.getMainVideo?.();
+      if (!v) return null;
+      const t = Number(v.currentTime || 0);
+      return Number.isFinite(t) ? t : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ------------------------------------------------------------
   // Observer control
   // ------------------------------------------------------------
+
+  // Nota importante:
+  // - stopVisualObserver() SOLO desconecta el observer y resetea flags de scheduling.
+  // - NO borra el dedupe histórico, para no re-leer el mismo subtítulo si rehook/reselect reinicia.
   function stopVisualObserver() {
     try { S.visualObserver?.disconnect?.(); } catch {}
     S.visualObserver = null;
     S.visualObserverActive = false;
 
-    // Scheduler flags
     S._visualScheduled = false;
     S.visualDirty = false;
     S.visualDirtyAt = 0;
+  }
 
-    // Dedupe visual-only
+  // Esto se usa cuando realmente querés "borrar memoria" del visual:
+  // (por ejemplo, al apagar extensión o reiniciar pipeline completo).
+  function resetVisualDedupe() {
     S._visualLastAt = 0;
     S._visualLastText = "";
     S._visualLastKey = "";
     S._visualLastStrict = "";
     S._visualLastLoose = "";
+    S._visualLastVideoTimeSec = null;
+
+    // para compat con tu lógica previa
+    S.lastVisualSeen = "";
   }
 
   // RAF scheduler: 1 lectura por frame si hubo mutaciones.
@@ -366,7 +370,6 @@
   function scheduleVisualRead(reasonNode) {
     if (S.effectiveFuente !== "visual") return;
 
-    // Nunca reaccionar a mutaciones causadas por nuestra UI.
     if (reasonNode && isInsideKathWareUI(reasonNode)) return;
 
     // Disney gating extra: si la mutación no toca subtítulos, ignoramos
@@ -397,6 +400,7 @@
     S.visualSelectors = getSelectors();
     S.visualSelectorUsed = pickBestSelector(p);
 
+    // Ojo: acá NO reseteamos dedupe histórico.
     stopVisualObserver();
 
     const useDocObserver = !!caps().visualDocObserver;
@@ -411,7 +415,6 @@
           if (m.addedNodes && m.addedNodes[0]) { reasonNode = m.addedNodes[0]; break; }
         }
 
-        // Si la mutación fue dentro de nuestra UI, no hacemos nada.
         if (reasonNode && isInsideKathWareUI(reasonNode)) return;
 
         scheduleVisualRead(reasonNode);
@@ -440,7 +443,7 @@
   // pollVisualTick:
   // - Si observer está activo, poll es SOLO fallback (no habla).
   // - Si viene del observer, solo lee si hubo “dirty”.
-  // - Aplica dedupe robusto.
+  // - Aplica dedupe robusto + (Netflix/Max) dedupe por tiempo de video.
   // ------------------------------------------------------------
   function pollVisualTick(fromObserver = false, reasonNode = null) {
     if (!KWSR.voice?.shouldReadNow?.()) return;
@@ -449,13 +452,12 @@
     // Si el tick NO viene del observer y el observer está activo: no hacemos nada.
     if (!fromObserver && S.visualObserverActive) return;
 
-    // Si viene del observer pero no hubo cambios “relevantes”: no hacemos nada.
+    // Si viene del observer pero no hubo cambios: nada.
     if (fromObserver) {
       if (!S.visualDirty) return;
       S.visualDirty = false;
     }
 
-    // Si la mutación viene de nuestra UI, ignorar.
     if (reasonNode && isInsideKathWareUI(reasonNode)) return;
 
     const p = platform();
@@ -470,22 +472,44 @@
     const { text, key } = readTextFromNodes(nodes, p);
     if (!text) return;
 
-    // ----- Dedupe VISUAL robusto -----
-    const now = performance.now();
-
-    // Ventanas temporales:
-    // - minRepeatMs: no repetir “inmediato”
-    // - allowRepeatAfterMs: permitir repetir si pasó bastante tiempo
-    const minRepeatMs = 700;
-    const allowRepeatAfterMs = 1700;
-
     const strict = fpStrict(text);
     const loose  = fpLoose(text);
+
+    // ------------------------------------------------------------
+    // Netflix/Max: anti re-render por tiempo de video (independiente del key)
+    // ------------------------------------------------------------
+    const isRerenderPlatform = (p === "netflix" || p === "max");
+    const tNow = getVideoTimeSec();
+    const lastT = (typeof S._visualLastVideoTimeSec === "number") ? S._visualLastVideoTimeSec : null;
+
+    if (isRerenderPlatform && tNow != null && lastT != null) {
+      const dtVideo = Math.abs(tNow - lastT);
+
+      const sameText =
+        (strict && strict === (S._visualLastStrict || "")) ||
+        (loose  && loose  === (S._visualLastLoose  || ""));
+
+      // Si el texto es el mismo y el video no avanzó casi nada, es re-render => no repetir
+      if (sameText && dtVideo < 0.30) {
+        if (DEBUG()) KWSR.log?.("VISUAL dedupe (videoTime)", { dtVideo, text });
+        return;
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Dedupe VISUAL robusto (strict/loose + key + ventanas)
+    // ------------------------------------------------------------
+    const now = performance.now();
+
+    // Netflix/Max: más agresivo en ventana corta
+    const minRepeatMs = isRerenderPlatform ? 950 : 700;
+    const allowRepeatAfterMs = isRerenderPlatform ? 2200 : 1700;
 
     const sameKey = key && key === (S._visualLastKey || "");
     const sameStrict = strict && strict === (S._visualLastStrict || "");
     const sameLoose  = loose  && loose  === (S._visualLastLoose  || "");
 
+    // Caso “normal”: mismo contenedor + mismo texto => bloquear dentro de ventanas
     if ((sameStrict || sameLoose) && sameKey) {
       const dt = now - (S._visualLastAt || 0);
       if (dt < minRepeatMs) {
@@ -498,28 +522,30 @@
       }
     }
 
-    // Extra: dedupe global visualSeen (para evitar loops raros sin key estable)
-    // (Usamos strict como valor estable en vez del texto crudo.)
+    // Extra: si por alguna razón no hay key estable, igual evitamos loops obvios en poll
     if (!fromObserver && strict && strict === S.lastVisualSeen) return;
     S.lastVisualSeen = strict || text;
 
-    // Guardar estado para dedupe visual-only
+    // Guardar estado dedupe
     S._visualLastText = text;
     S._visualLastKey = key || "";
     S._visualLastAt = now;
     S._visualLastStrict = strict;
     S._visualLastLoose = loose;
 
+    // Guardar tiempo de video si existe (para Netflix/Max)
+    if (tNow != null) S._visualLastVideoTimeSec = tNow;
+
     if (DEBUG()) KWSR.log?.("VISUAL speak", { selector: S.visualSelectorUsed, key, fromObserver, text });
 
-    // Delegamos dedupe final y salida (TTS/live region) al módulo voice.
+    // Delegamos la salida final al módulo voice (que tiene dedupe global también)
     KWSR.voice?.leerTextoAccesible?.(text);
   }
 
   // ------------------------------------------------------------
   // visualReselectTick:
   // Re-evalúa qué selector es “mejor” (por si el DOM cambió fuerte).
-  // Si cambia, reinicia observer.
+  // Si cambia, reinicia observer (sin borrar dedupe histórico).
   // ------------------------------------------------------------
   function visualReselectTick() {
     const p = platform();
@@ -535,7 +561,10 @@
     startVisual,
     stopVisualObserver,
     pollVisualTick,
-    visualReselectTick
+    visualReselectTick,
+
+    // útil para pipeline cuando hace “apagado total”
+    resetVisualDedupe
   };
 
   /*
@@ -544,7 +573,9 @@
   ===========================
   - FIX: Nunca leer nodos dentro de la UI de KathWare (overlay/toast/live region).
   - FIX: Dedupe VISUAL robusto (fingerprint strict/loose + key + ventanas temporales).
-  - FIX: Unión de líneas más segura (evita “palabras pegadas” cuando el DOM separa nodos).
+  - FIX: Netflix/Max: dedupe adicional por tiempo de video (evita re-render eco aunque cambie el contenedor).
+  - FIX: smartJoinLines evita “palabras pegadas” cuando el DOM separa nodos.
+  - FIX: No se borra dedupe histórico al rehook/reselect (evita repetir subtítulo por restart del observer).
   - Se mantiene: Observer + Poll fallback (poll no habla si observer está activo).
   */
 })();

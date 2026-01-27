@@ -14,7 +14,7 @@
 // - Porque speechSynthesis puede fallar o “colgarse” en ciertos sitios.
 //
 // Qué PROBLEMA grande resolvemos acá:
-/// - Repeticiones: aunque VISUAL/TRACK intenten dedupe, algunas plataformas
+// - Repeticiones: aunque VISUAL/TRACK intenten dedupe, algunas plataformas
 //   re-renderizan y/o disparan eventos duplicados. Acá hacemos el filtro final.
 //
 // Importante:
@@ -38,7 +38,6 @@
   let watchdogTimer = null;
 
   // Si querés que al fallar TTS cambie automáticamente a "lector":
-  // (esto evita que se “muera” la lectura si TTS se rompe)
   const AUTO_SWITCH_TO_READER_ON_TTS_FAIL = true;
 
   // ------------------------------------------------------------
@@ -72,13 +71,10 @@
 
   // pushToLiveRegion:
   // - Esta función la necesita también el toast (para feedback accesible).
-  // - En tu versión anterior el toast la llamaba, pero no existía: bug.
   function pushToLiveRegion(text) {
     ensureLiveRegion();
 
     try {
-      // Forzar anuncio: limpiamos y luego escribimos con un mini delay.
-      // (Esto ayuda a que SR anuncie aunque el texto sea parecido.)
       S.liveRegion.textContent = "";
       setTimeout(() => {
         if (!S.liveRegion) return;
@@ -99,8 +95,7 @@
 
   // cargarVozES:
   // - Intentamos elegir una voz española si existe.
-  // - Ojo: esto NO “detecta idioma del SR”. Solo selecciona una voz TTS.
-  // - Si querés, más adelante podemos no forzar nada y dejar la default.
+  // - Esto NO detecta idioma del lector de pantalla.
   function cargarVozES() {
     try {
       if (!isTTSAvailable()) return;
@@ -113,7 +108,6 @@
         voces[0] ||
         null;
 
-      // Algunos navegadores cargan voces async
       speechSynthesis.onvoiceschanged = () => {
         try {
           const v2 = speechSynthesis.getVoices?.() || [];
@@ -145,13 +139,11 @@
     lastTtsError = String(reason || "unknown");
     ttsBrokenUntil = Date.now() + 4000;
 
-    // Guardamos info útil en state para debug/overlay si se quisiera
     S.ttsLastError = lastTtsError;
     S.ttsBrokenUntil = ttsBrokenUntil;
 
     KWSR.warn?.("TTS error", { msg: lastTtsError });
 
-    // Fallback fuerte para que NO muera el flujo
     hardResetTTS();
 
     if (AUTO_SWITCH_TO_READER_ON_TTS_FAIL) {
@@ -185,11 +177,16 @@
     if (!S.extensionActiva) return false;
     if (!S.modoNarradorGlobal || S.modoNarradorGlobal === "off") return false;
 
+    // Ajuste defensivo: si tenemos video, no leer en pausa (evita “spam” en menús)
+    try {
+      const v = S.currentVideo;
+      if (v && (v.paused || v.ended)) return false;
+    } catch {}
+
     maybeUnstickTTS();
     return true;
   }
 
-  // Mandamos el texto al overlay (si existe) para que el usuario lo vea.
   function emitToOverlay(text) {
     try { KWSR.overlay?.updateOverlayText?.(text); } catch {}
   }
@@ -197,7 +194,6 @@
   // ------------------------------------------------------------
   // DEDUPE final (anti eco global)
   // ------------------------------------------------------------
-  // fpStrict: comparación fuerte (para “lo mismo” con espacios raros)
   function fpStrict(text) {
     return normalize(text)
       .replace(/\u00A0/g, " ")
@@ -207,7 +203,6 @@
       .toLowerCase();
   }
 
-  // fpLoose: ignora signos y separadores típicos (para re-renders con micro-cambios)
   function fpLoose(text) {
     return normalize(text)
       .replace(/\u00A0/g, " ")
@@ -219,9 +214,6 @@
       .toLowerCase();
   }
 
-  // dedupe(raw):
-  // - Devuelve "" si se considera duplicado.
-  // - Devuelve texto limpio si hay que leerlo.
   function dedupe(raw) {
     const clean = normalize(raw);
     if (!clean) return "";
@@ -236,8 +228,7 @@
     const lastStrict = S.lastEmitStrictKey || "";
     const lastLoose  = S.lastEmitLooseKey  || "";
 
-    // 1) Anti-eco inmediato (doble disparo típico: observer + poll, o re-render)
-    // echoMs: ventana corta donde NO repetimos lo mismo.
+    // 1) Anti-eco inmediato (doble disparo típico)
     const echoMs = (CFG.echoMs ?? 380);
 
     if (
@@ -251,10 +242,9 @@
       return "";
     }
 
-    // 2) Cooldown normal: si es exactamente igual (strict) y todavía estamos
-    // dentro de una ventana, no lo repetimos.
+    // 2) Cooldown normal (más largo si el texto es largo)
     const base = (CFG.cooldownMs ?? 650);
-    const extra = Math.min(1100, strictKey.length * 12); // más largo => más cooldown
+    const extra = Math.min(1100, strictKey.length * 12);
     const windowMs = base + extra;
 
     if (strictKey === lastStrict && dt < windowMs) return "";
@@ -285,8 +275,7 @@
     try {
       clearWatchdog();
 
-      // Anti-eco extra de TTS:
-      // Si por alguna razón nos llega el mismo texto muy pegado, no re-disparamos.
+      // Anti-eco extra de TTS
       const tKey = fpStrict(text);
       if (
         tKey &&
@@ -296,18 +285,13 @@
         return true;
       }
 
-      // Cancel antes de hablar para evitar cola infinita (Chrome)
       try { speechSynthesis.cancel?.(); } catch {}
 
       const u = new SpeechSynthesisUtterance(text);
 
-      // Si hay voz ES detectada, la usamos; si no, dejamos default.
       if (S.voiceES) u.voice = S.voiceES;
 
-      // lang: si tenemos voz, usamos su lang; si no, es-ES genérico.
       u.lang = (S.voiceES?.lang) || "es-ES";
-
-      // Defaults “seguros”
       u.rate = 1;
       u.pitch = 1;
       u.volume = 1;
@@ -332,7 +316,6 @@
         markTTSBroken(msg);
       };
 
-      // Watchdog: si no hay end/error, asumimos que se colgó.
       watchdogTimer = setTimeout(() => {
         if (finished) return;
         markTTSBroken("watchdog_no_end_no_error");
@@ -349,9 +332,6 @@
 
   // ------------------------------------------------------------
   // API pública: leerTextoAccesible(raw)
-  // - Aplica dedupe final
-  // - Actualiza overlay
-  // - Decide si usa live region o TTS
   // ------------------------------------------------------------
   function leerTextoAccesible(raw) {
     if (!shouldReadNow()) return;
@@ -361,13 +341,11 @@
 
     emitToOverlay(text);
 
-    // Modo lector: solo aria-live
     if (S.modoNarradorGlobal === "lector") {
       pushToLiveRegion(text);
       return;
     }
 
-    // Modo sintetizador: intentamos TTS; si falla, fallback a aria-live
     const ok = speakTTS(text);
     if (!ok) pushToLiveRegion(text);
   }
@@ -376,6 +354,14 @@
     try { clearWatchdog(); } catch {}
     try { hardResetTTS(); } catch {}
     try { if (S.liveRegion) S.liveRegion.textContent = ""; } catch {}
+
+    // Ajuste defensivo: limpiar dedupe global al “stop”
+    S.lastEmitAt = 0;
+    S.lastEmitText = "";
+    S.lastEmitStrictKey = "";
+    S.lastEmitLooseKey = "";
+    S.lastSpokenAt = 0;
+    S.lastSpokenKey = "";
   }
 
   // Export del módulo
@@ -384,17 +370,17 @@
     shouldReadNow,
     leerTextoAccesible,
     detenerLectura,
-    pushToLiveRegion // ✅ usado por toast y por modo lector
+    pushToLiveRegion
   };
 
   /*
   ===========================
   Cambios aplicados (resumen)
   ===========================
-  - FIX: Se agregó pushToLiveRegion() (toast lo necesitaba).
-  - FIX: Se eliminó el llamado a fingerprint() inexistente: ahora usamos fpStrict().
-  - FIX: Dedupe final más robusto (strict + loose + ventana echo + cooldown).
+  - pushToLiveRegion() existe y es público (toast lo usa).
+  - Dedupe final robusto (strict + loose + echo + cooldown adaptativo).
   - Watchdog anti-freeze: si TTS se cuelga, cancel() + fallback a lector (opcional).
-  - Mantiene: live region offscreen + SpeechSynthesisUtterance con voz ES si existe.
+  - Ajuste: si hay video en state, no leer en pausa/ended (anti-spam).
+  - Ajuste: detenerLectura() limpia dedupe global para reinicios limpios.
   */
 })();

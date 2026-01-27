@@ -10,6 +10,16 @@
 // ====================================================
 
 document.addEventListener("DOMContentLoaded", () => {
+  const api =
+    (typeof chrome !== "undefined" && chrome?.runtime) ? chrome :
+    (typeof browser !== "undefined" && browser?.runtime) ? browser :
+    null;
+
+  if (!api) {
+    console.warn("[KWSR] No runtime API (chrome/browser).");
+    return;
+  }
+
   const modoNarrador = document.getElementById("modoNarrador");
 
   const reporteError = document.getElementById("reporteError");
@@ -22,26 +32,27 @@ document.addEventListener("DOMContentLoaded", () => {
   // ---------------- Helpers ----------------
 
   function withActiveTab(cb) {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    api.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs?.[0];
-      if (!tab?.id) return;
-      cb(tab.id, tab);
+      cb(tab || null);
     });
   }
 
   function notifyContentScript() {
-    withActiveTab((tabId) => {
-      chrome.tabs.sendMessage(
-        tabId,
+    withActiveTab((tab) => {
+      if (!tab?.id) return;
+
+      api.tabs.sendMessage(
+        tab.id,
         { action: "updateSettings" },
-        () => void chrome.runtime.lastError
+        () => void api.runtime.lastError // silenciar si no hay content script
       );
     });
   }
 
   // ---------------- Cargar configuración ----------------
 
-  chrome.storage.local.get(["modoNarrador"], (data) => {
+  api.storage.local.get(["modoNarrador"], (data) => {
     if (data?.modoNarrador && modoNarrador) {
       modoNarrador.value = data.modoNarrador;
     }
@@ -50,7 +61,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // ---------------- Guardar modo de lectura ----------------
 
   modoNarrador?.addEventListener("change", () => {
-    chrome.storage.local.set(
+    api.storage.local.set(
       { modoNarrador: modoNarrador.value },
       notifyContentScript
     );
@@ -64,13 +75,20 @@ document.addEventListener("DOMContentLoaded", () => {
       if (h.includes("netflix")) return "netflix";
       if (h.includes("disney")) return "disney";
       if (h.includes("max")) return "max";
-      if (h.includes("primevideo")) return "prime";
+      if (h.includes("primevideo") || h.includes("amazon")) return "prime";
       if (h.includes("paramount")) return "paramount";
       if (h.includes("flow")) return "flow";
+      if (h.includes("youtube")) return "youtube";
       return "generic";
     } catch {
       return "generic";
     }
+  }
+
+  function safeLine(x) {
+    const s = String(x ?? "").replace(/\u0000/g, "").trim();
+    if (!s) return "";
+    return s.length > 300 ? (s.slice(0, 300) + "…") : s;
   }
 
   function buildIssueBody(reporte) {
@@ -90,9 +108,13 @@ document.addEventListener("DOMContentLoaded", () => {
     lines.push("");
 
     if (reporte.logs?.length) {
-      lines.push("## Logs");
+      lines.push("## Logs (opt-in)");
       lines.push("```");
-      reporte.logs.forEach(l => lines.push(String(l.msg || l)));
+      reporte.logs.forEach((l) => {
+        const msg = (typeof l === "object" && l) ? (l.msg ?? JSON.stringify(l)) : l;
+        const line = safeLine(msg);
+        if (line) lines.push(line);
+      });
       lines.push("```");
     }
 
@@ -100,16 +122,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function openGithubIssue(reporte) {
-    const title = encodeURIComponent(
-      `Bug: ${reporte.platform} — lectura de subtítulos`
-    );
-
-    const body = encodeURIComponent(
-      buildIssueBody(reporte).slice(0, 7000)
-    );
-
+    const title = encodeURIComponent(`Bug: ${reporte.platform} — lectura de subtítulos`);
+    const body = encodeURIComponent(buildIssueBody(reporte).slice(0, 7000));
     const url = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/issues/new?title=${title}&body=${body}`;
-    chrome.tabs.create({ url });
+    api.tabs.create({ url });
   }
 
   enviarReporte?.addEventListener("click", () => {
@@ -122,26 +138,27 @@ document.addEventListener("DOMContentLoaded", () => {
     const reporte = {
       mensaje,
       fecha: new Date().toISOString(),
-      version: chrome.runtime.getManifest().version,
+      version: api.runtime.getManifest().version,
       modoNarrador: modoNarrador?.value || "desconocido",
       url: "",
       platform: "",
-      ua: navigator.userAgent
+      ua: navigator.userAgent,
+      logs: []
     };
 
-    withActiveTab((_, tab) => {
-      reporte.url = tab.url || "";
-      reporte.platform = inferPlatformFromUrl(reporte.url);
+    withActiveTab((tab) => {
+      reporte.url = tab?.url || "(sin URL o pestaña no compatible)";
+      reporte.platform = inferPlatformFromUrl(tab?.url || "");
 
       if (permitirEnvioLogs?.checked) {
-        chrome.storage.local.get("kathLogs", (data) => {
+        api.storage.local.get("kathLogs", (data) => {
           reporte.logs = (data?.kathLogs || []).slice(-100);
           openGithubIssue(reporte);
-          reporteError.value = "";
+          if (reporteError) reporteError.value = "";
         });
       } else {
         openGithubIssue(reporte);
-        reporteError.value = "";
+        if (reporteError) reporteError.value = "";
       }
     });
   });

@@ -1,15 +1,56 @@
+/* =========================================================
+   KathWare SubtitleReader - popup.css
+   Objetivo:
+   - Popup limpio, legible y consistente en distintos tamaños.
+   - Accesibilidad real: foco visible, buen contraste, controles cómodos.
+   - UX: :focus-visible para teclado (sin “outline” molesto al click).
+   ========================================================= */
+
+/* --------------------------
+   Variables de tema (simple)
+   -------------------------- */
+:root {
+  --bg: #ffffff;
+  --fg: #000000;
+  --muted: #444444;
+  --border: #999999;
+
+  --header-bg: #111111;
+
+  --btn-bg: #222222;
+  --btn-bg-hover: #333333;
+  --btn-bg-focus: #2b2b2b;
+
+  --focus: #000000;
+
+  /* Ajustes de forma/espaciado */
+  --radius: 6px;
+  --pad: 0.5rem;
+}
+
+/* --------------------------
+   Base
+   -------------------------- */
 body {
   font-family: Arial, sans-serif;
   font-size: 16px;
   line-height: 1.4;
+
   margin: 0;
   padding: 0;
-  background-color: #ffffff;
-  color: #000000;
+
+  background-color: var(--bg);
+  color: var(--fg);
+
+  /* En popups muy chicos evita que quede “apretado” */
+  min-width: 320px;
 }
 
+/* --------------------------
+   Header
+   -------------------------- */
 header {
-  background-color: #111111;
+  background-color: var(--header-bg);
   color: #ffffff;
   padding: 1rem;
   text-align: center;
@@ -20,6 +61,9 @@ h1 {
   margin: 0;
 }
 
+/* --------------------------
+   Layout general
+   -------------------------- */
 main {
   padding: 1rem;
 }
@@ -28,51 +72,106 @@ section {
   margin-bottom: 1.25rem;
 }
 
+/* Labels separados, bien “escaneables” */
 label {
   display: block;
   font-weight: bold;
   margin-bottom: 0.5rem;
 }
 
+/* --------------------------
+   Controles de formulario
+   -------------------------- */
 select,
 textarea,
 button {
   width: 100%;
-  padding: 0.5rem;
+  padding: var(--pad);
   font-size: 1rem;
+
   margin-top: 0.25rem;
-  border: 1px solid #999999;
-  border-radius: 4px;
+
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+
   box-sizing: border-box;
 }
 
+/* Textarea: permitir crecer, pero con base cómoda */
 textarea {
   resize: vertical;
+  min-height: 5.5rem;
 }
 
+/* --------------------------
+   Botones
+   -------------------------- */
 button {
-  background-color: #222222;
+  background-color: var(--btn-bg);
   color: #ffffff;
+
   cursor: pointer;
   border: none;
-  transition: background-color 0.2s ease;
+
+  transition: background-color 0.15s ease, transform 0.05s ease;
 }
 
 button:hover {
-  background-color: #333333;
+  background-color: var(--btn-bg-hover);
 }
 
-button:focus {
-  outline: 3px solid #000;
+/* Feedback táctil / click */
+button:active {
+  transform: translateY(1px);
+}
+
+/* Estado deshabilitado (importante si luego lo usás) */
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* --------------------------
+   Foco accesible
+   - :focus como fallback
+   - :focus-visible para teclado (mejor UX)
+   -------------------------- */
+select:focus,
+textarea:focus,
+button:focus,
+a:focus {
+  outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 
-input[type="checkbox"] {
+/* Si el navegador soporta :focus-visible:
+   evitamos outline cuando el foco vino por click */
+select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible),
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* En teclado, además del outline, un toque de feedback visual */
+button:focus-visible {
+  background-color: var(--btn-bg-focus);
+}
+
+/* --------------------------
+   Checkbox
+   Nota: tu HTML ya envuelve el input dentro del label,
+   entonces el “target” de click es más grande (bien).
+   -------------------------- */
+label input[type="checkbox"] {
   width: auto;
   margin-right: 0.5rem;
   vertical-align: middle;
 }
 
+/* --------------------------
+   Footer / links
+   -------------------------- */
 footer {
   border-top: 1px solid #cccccc;
   padding-top: 1rem;
@@ -93,16 +192,28 @@ footer a {
   text-decoration: underline;
 }
 
-footer a:focus,
-footer a:hover {
+/* Hover/focus en links: sacamos underline para dar feedback,
+   pero mantenemos el outline para teclado */
+footer a:hover,
+footer a:focus-visible {
   text-decoration: none;
-  outline: 3px solid #000;
-  outline-offset: 2px;
 }
 
+/* --------------------------
+   Texto informativo / ayuda
+   -------------------------- */
 .info {
   font-size: 0.95rem;
-  color: #444444;
+  color: var(--muted);
+
+  /* Ajuste visual para que no quede pegado al header */
   margin-top: -0.5rem;
   margin-bottom: 0.75rem;
+}
+
+/* Tenías <p class="help"> en HTML y no estaba estilado */
+.help {
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin: 0.5rem 0 0;
 }
