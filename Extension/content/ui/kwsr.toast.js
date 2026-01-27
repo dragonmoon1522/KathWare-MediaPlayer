@@ -8,20 +8,17 @@
 //
 // Qué hace este módulo:
 // 1) Crea un toast visual (#kw-toast) cuando hace falta (lazy).
-// 2) Crea una "live region" oculta para avisos accesibles (#kw-toast-live).
-//    - Esto NO son subtítulos.
-//    - Esto es feedback de la extensión (estado/errores).
+// 2) Anuncia accesible (SR/braille) de forma independiente a subtítulos:
+//
+//    Preferencia:
+//    - Si existe KWSR.voice.pushToLiveRegion(): lo usamos (UN solo live region global).
+//
+//    Fallback:
+//    - Si voice aún no está disponible, creamos una live region propia (#kw-toast-live).
 //
 // Importante:
-// - No debe depender de funciones que puedan no existir.
 // - No debe romper si la extensión está OFF.
-// - Debe ser fácil de excluir del motor VISUAL (por id y por clase).
-//
-// Nota sobre "no leernos a nosotros mismos":
-// - El toast tiene id #kw-toast y la live region #kw-toast-live.
-// - En adapters ya se excluye #kw-toast.
-// - En VISUAL conviene excluir también #kw-toast y #kw-toast-live.
-//
+// - Debe ser fácil de excluir del motor VISUAL (por id).
 // ====================================================
 
 (() => {
@@ -31,7 +28,7 @@
   const S = KWSR.state;
 
   // ------------------------------------------------------------
-  // 1) Crear / obtener el toast visual
+  // 1) Toast visual
   // ------------------------------------------------------------
   function ensureToastEl() {
     if (S.toastEl) return S.toastEl;
@@ -39,14 +36,11 @@
     const el = document.createElement("div");
     el.id = "kw-toast";
 
-    // Accesibilidad básica del toast visual:
-    // - role=status y aria-live=polite sirven, pero OJO:
-    //   algunos lectores de pantalla pueden leerlo si está visible.
-    // Por eso usamos además una live region OFFSCREEN separada.
-    el.setAttribute("role", "status");
-    el.setAttribute("aria-live", "polite");
+    // Importante:
+    // - Evitamos aria-live acá para NO provocar lecturas “dobles”
+    //   (la parte accesible la manejamos por live region dedicada).
+    el.setAttribute("role", "presentation");
 
-    // Estilos inline para no depender de CSS externo
     Object.assign(el.style, {
       position: "fixed",
       top: "1rem",
@@ -57,9 +51,9 @@
       borderRadius: "10px",
       zIndex: "2147483647",
       fontSize: "14px",
-      maxWidth: "70vw",
-      boxShadow: "0 8px 30px rgba(0,0,0,0.35)",
-      pointerEvents: "none" // no molesta al mouse/teclado
+      maxWidth: "min(520px, 70vw)",
+      boxShadow: "0 10px 28px rgba(0,0,0,0.32)",
+      pointerEvents: "none"
     });
 
     document.documentElement.appendChild(el);
@@ -68,20 +62,17 @@
   }
 
   // ------------------------------------------------------------
-  // 2) Crear / obtener live region oculta (para SR/braille)
+  // 2) Live region fallback (solo si no existe KWSR.voice.pushToLiveRegion)
   // ------------------------------------------------------------
   function ensureToastLiveRegion() {
     if (S.toastLiveRegion) return S.toastLiveRegion;
 
     const div = document.createElement("div");
     div.id = "kw-toast-live";
-
-    // role=status + polite: anuncia sin interrumpir brutalmente
     div.setAttribute("role", "status");
     div.setAttribute("aria-live", "polite");
     div.setAttribute("aria-atomic", "true");
 
-    // Offscreen real (no opacity:0)
     Object.assign(div.style, {
       position: "fixed",
       left: "-9999px",
@@ -99,15 +90,20 @@
     return div;
   }
 
-  // Escribe en la live region de toast (anuncio accesible)
   function announce(msg) {
     const text = String(msg ?? "").trim();
     if (!text) return;
 
+    // Preferencia: usar la live region global del motor voice
+    // (así no creamos 2 live regions distintas).
+    if (KWSR.voice?.pushToLiveRegion) {
+      try { KWSR.voice.pushToLiveRegion(text); } catch {}
+      return;
+    }
+
+    // Fallback: live region propia
     try {
       const lr = ensureToastLiveRegion();
-
-      // Truco para forzar anuncio: vaciar y luego setear
       lr.textContent = "";
       setTimeout(() => {
         if (!S.toastLiveRegion) return;
@@ -117,7 +113,7 @@
   }
 
   // ------------------------------------------------------------
-  // 3) API pública: notify + clear
+  // 3) API pública
   // ------------------------------------------------------------
   function notify(msg, opts = {}) {
     const text = String(msg ?? "").trim();
@@ -127,17 +123,12 @@
     const announceToSR = (typeof opts.announceToSR === "boolean") ? opts.announceToSR : true;
     const logToConsole = (typeof opts.logToConsole === "boolean") ? opts.logToConsole : true;
 
-    // Log técnico (esto además puede ir al background si CFG.allowRemoteLogs está ON)
     if (logToConsole) {
       try { KWSR.log?.("toast", { msg: text }); } catch {}
     }
 
-    // Aviso accesible (no depende del motor de voz/subtítulos)
-    if (announceToSR) {
-      announce(text);
-    }
+    if (announceToSR) announce(text);
 
-    // Toast visual
     try {
       const el = ensureToastEl();
       el.textContent = text;
@@ -149,11 +140,8 @@
     } catch {}
   }
 
-  // Limpia todo: timer + nodos DOM (visual y live region)
   function clear() {
-    try {
-      if (S.toastTimer) clearTimeout(S.toastTimer);
-    } catch {}
+    try { if (S.toastTimer) clearTimeout(S.toastTimer); } catch {}
     S.toastTimer = null;
 
     if (S.toastEl) {
@@ -161,6 +149,7 @@
       S.toastEl = null;
     }
 
+    // Solo removemos el fallback live region si lo creamos nosotros
     if (S.toastLiveRegion) {
       try { S.toastLiveRegion.remove(); } catch {}
       S.toastLiveRegion = null;
@@ -173,10 +162,8 @@
   ===========================
   Cambios / decisiones
   ===========================
-  - Se eliminó la dependencia de KWSR.voice.pushToLiveRegion (no existía).
-  - Se creó una live region propia del toast (#kw-toast-live) para anuncios accesibles.
-  - El toast visual (#kw-toast) usa pointerEvents:none para no estorbar.
-  - notify() admite opciones (durationMs, announceToSR, logToConsole) sin complicar.
-  - clear() elimina tanto toast visual como live region.
+  - FIX: announce accesible usa KWSR.voice.pushToLiveRegion() si existe.
+  - Fallback: si voice no está, creamos #kw-toast-live offscreen.
+  - El toast visual NO usa aria-live para evitar lecturas duplicadas.
   */
 })();

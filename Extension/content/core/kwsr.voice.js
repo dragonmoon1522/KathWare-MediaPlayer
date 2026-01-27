@@ -41,6 +41,29 @@
   const AUTO_SWITCH_TO_READER_ON_TTS_FAIL = true;
 
   // ------------------------------------------------------------
+  // Helpers plataforma / videoTime (para anti re-render eco)
+  // ------------------------------------------------------------
+  function platform() {
+    try { return KWSR.platforms?.getPlatform?.() || "generic"; } catch { return "generic"; }
+  }
+
+  function isRerenderPlatform() {
+    const p = platform();
+    return (p === "netflix" || p === "max");
+  }
+
+  function getVideoTimeSec() {
+    try {
+      const v = S.currentVideo || KWSR.video?.getMainVideo?.();
+      if (!v) return null;
+      const t = Number(v.currentTime || 0);
+      return Number.isFinite(t) ? t : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ------------------------------------------------------------
   // Live Region (aria-live) para modo "lector"
   // ------------------------------------------------------------
   function ensureLiveRegion() {
@@ -228,17 +251,39 @@
     const lastStrict = S.lastEmitStrictKey || "";
     const lastLoose  = S.lastEmitLooseKey  || "";
 
-    // 1) Anti-eco inmediato (doble disparo típico)
-    const echoMs = (CFG.echoMs ?? 380);
+    const sameTextish =
+      (strictKey && strictKey === lastStrict) ||
+      (looseKey && looseKey === lastLoose) ||
+      (lastLoose && looseKey && (lastLoose.includes(looseKey) || looseKey.includes(lastLoose)));
 
-    if (
-      dt < echoMs &&
-      (
-        strictKey === lastStrict ||
-        looseKey === lastLoose ||
-        (lastLoose && looseKey && (lastLoose.includes(looseKey) || looseKey.includes(lastLoose)))
-      )
-    ) {
+    // ------------------------------------------------------------
+    // 0) Netflix/Max: gate adicional por tiempo de video (anti re-render lento)
+    // Si llega “lo mismo” pero el video casi no avanzó => bloquear
+    // (aunque haya pasado más tiempo real).
+    // ------------------------------------------------------------
+    if (isRerenderPlatform() && sameTextish) {
+      const tNow = getVideoTimeSec();
+      const lastT = (typeof S.lastEmitVideoTimeSec === "number") ? S.lastEmitVideoTimeSec : null;
+
+      if (tNow != null && lastT != null) {
+        const dtVideo = Math.abs(tNow - lastT);
+        // Umbral levemente más alto que VISUAL por si llega tarde desde pipeline
+        const gate = (platform() === "max") ? 0.40 : 0.35;
+
+        if (dtVideo < gate) {
+          // opcional: “actualizar” para cortar ráfagas raras
+          S.lastEmitVideoTimeSec = tNow;
+          return "";
+        }
+      }
+    }
+
+    // 1) Anti-eco inmediato (doble disparo típico)
+    // Netflix/Max suelen re-renderizar con más delay: subimos un poquito SOLO ahí.
+    const baseEcho = (CFG.echoMs ?? 380);
+    const echoMs = isRerenderPlatform() ? Math.max(baseEcho, 520) : baseEcho;
+
+    if (dt < echoMs && sameTextish) {
       return "";
     }
 
@@ -254,6 +299,10 @@
     S.lastEmitLooseKey  = looseKey;
     S.lastEmitAt = now;
     S.lastEmitText = clean;
+
+    // Guardar videoTime si existe (para Netflix/Max gate)
+    const vt = getVideoTimeSec();
+    if (vt != null) S.lastEmitVideoTimeSec = vt;
 
     return clean;
   }
@@ -360,6 +409,8 @@
     S.lastEmitText = "";
     S.lastEmitStrictKey = "";
     S.lastEmitLooseKey = "";
+    S.lastEmitVideoTimeSec = null;
+
     S.lastSpokenAt = 0;
     S.lastSpokenKey = "";
   }
@@ -377,10 +428,12 @@
   ===========================
   Cambios aplicados (resumen)
   ===========================
-  - pushToLiveRegion() existe y es público (toast lo usa).
-  - Dedupe final robusto (strict + loose + echo + cooldown adaptativo).
-  - Watchdog anti-freeze: si TTS se cuelga, cancel() + fallback a lector (opcional).
-  - Ajuste: si hay video en state, no leer en pausa/ended (anti-spam).
-  - Ajuste: detenerLectura() limpia dedupe global para reinicios limpios.
+  - NEW: Plataforma (netflix/max) detectada vía KWSR.platforms.getPlatform().
+  - NEW: Gate anti-eco por video.currentTime en Netflix/Max (mismo texto + video casi igual => bloquear).
+  - NEW: echoMs más alto SOLO en Netflix/Max (por re-render lento).
+  - Se mantiene: dedupe final robusto (strict + loose + echo + cooldown adaptativo).
+  - Se mantiene: watchdog anti-freeze + fallback a lector (opcional).
+  - Se mantiene: no leer en pausa/ended (anti-spam).
+  - Se mantiene: detenerLectura() limpia dedupe global para reinicios limpios.
   */
 })();

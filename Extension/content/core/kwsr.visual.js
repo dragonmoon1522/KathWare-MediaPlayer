@@ -489,9 +489,15 @@
         (strict && strict === (S._visualLastStrict || "")) ||
         (loose  && loose  === (S._visualLastLoose  || ""));
 
+      // Netflix vs Max: umbral distinto (Max suele ser más "re-render con delay")
+      const gate = (p === "max") ? 0.40 : 0.35;
+
       // Si el texto es el mismo y el video no avanzó casi nada, es re-render => no repetir
-      if (sameText && dtVideo < 0.30) {
-        if (DEBUG()) KWSR.log?.("VISUAL dedupe (videoTime)", { dtVideo, text });
+      if (sameText && dtVideo < gate) {
+        // 🔧 tweak: actualizar lastVideoTime igual, para cortar ráfagas con microavance
+        S._visualLastVideoTimeSec = tNow;
+
+        if (DEBUG()) KWSR.log?.("VISUAL dedupe (videoTime)", { dtVideo, gate, text });
         return;
       }
     }
@@ -574,6 +580,8 @@
   - FIX: Nunca leer nodos dentro de la UI de KathWare (overlay/toast/live region).
   - FIX: Dedupe VISUAL robusto (fingerprint strict/loose + key + ventanas temporales).
   - FIX: Netflix/Max: dedupe adicional por tiempo de video (evita re-render eco aunque cambie el contenedor).
+  - NEW: Netflix gate = 0.35s, Max gate = 0.40s.
+  - NEW: En dedupe por videoTime, actualizamos _visualLastVideoTimeSec igual para cortar ráfagas.
   - FIX: smartJoinLines evita “palabras pegadas” cuando el DOM separa nodos.
   - FIX: No se borra dedupe histórico al rehook/reselect (evita repetir subtítulo por restart del observer).
   - Se mantiene: Observer + Poll fallback (poll no habla si observer está activo).

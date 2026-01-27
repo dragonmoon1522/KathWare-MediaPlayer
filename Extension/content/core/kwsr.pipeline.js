@@ -17,6 +17,13 @@
 // Cambio importante en esta versión:
 // - Solo activamos el polling del motor que está activo (TRACK o VISUAL).
 //   El otro polling NO corre, para evitar duplicados y trabajo innecesario.
+//
+// Nota sobre dedupe (MUY importante):
+// - El dedupe "histórico" de VISUAL no debe resetearse por micro-rehooks.
+// - Solo lo reseteamos en eventos “grandes”:
+//   * Toggle OFF/ON real
+//   * Cambio de video (nuevo contenido)
+//   * restartPipeline (reinicio fuerte por settings)
 // ====================================================
 
 (() => {
@@ -24,11 +31,49 @@
   if (!KWSR || KWSR.pipeline) return;
 
   const S = KWSR.state;
-  const CFG = KWSR.CFG;
+  const CFG = KWSR.CFG || {};
 
   const getPlatform = () => KWSR.platforms?.getPlatform?.() || "generic";
   const platformLabel = (p) => KWSR.platforms?.platformLabel?.(p) || "Sitio";
   const getCaps = (p) => KWSR.platforms?.platformCapabilities?.(p) || {};
+
+  // Defaults seguros (por si CFG no está completo)
+  const POLL_TRACK_MS = Number.isFinite(CFG.pollMsTrack) ? CFG.pollMsTrack : 450;
+  const POLL_VISUAL_MS = Number.isFinite(CFG.pollMsVisual) ? CFG.pollMsVisual : 650;
+  const REHOOK_MS = Number.isFinite(CFG.rehookMs) ? CFG.rehookMs : 900;
+  const ADAPTERS_MS = Number.isFinite(CFG.adaptersMs) ? CFG.adaptersMs : 1200;
+  const VISUAL_RESELECT_MS = Number.isFinite(CFG.visualReselectMs) ? CFG.visualReselectMs : 2600;
+
+  // ------------------------------------------------------------
+  // Helpers: detectar “cambio de contenido” incluso si el <video> es el mismo
+  // ------------------------------------------------------------
+  function getVideoContentKey(v) {
+    try {
+      if (!v) return "noV";
+      // Netflix/Max: a veces el nodo es el mismo pero currentSrc cambia
+      const src = v.currentSrc || v.src || "";
+      return String(src || "noSrc");
+    } catch {
+      return "noV";
+    }
+  }
+
+  function isBigVideoChange(nextVideo) {
+    // Big change = cambió el nodo, o cambió el contenido (src)
+    const prevV = S.currentVideo || null;
+    const prevKey = S.currentVideoKey || getVideoContentKey(prevV);
+    const nextKey = getVideoContentKey(nextVideo);
+
+    const nodeChanged = (nextVideo !== prevV);
+    const contentChanged = (nextKey && nextKey !== prevKey);
+
+    return nodeChanged || contentChanged;
+  }
+
+  function markCurrentVideo(nextVideo) {
+    S.currentVideo = nextVideo || null;
+    S.currentVideoKey = getVideoContentKey(nextVideo);
+  }
 
   // ------------------------------------------------------------
   // Timers: los guardamos en state para poder apagarlos siempre
@@ -50,6 +95,7 @@
   // ------------------------------------------------------------
   // stopAll:
   // Apaga todo: timers + observers + track handlers + voz
+  // (Esto es “apagado total”.)
   // ------------------------------------------------------------
   function stopAll() {
     stopTimers();
@@ -66,21 +112,19 @@
     S.visualNode = null;
     S.visualSelectors = null;
 
-    // VOICE teardown
+    // Dedupe VISUAL histórico (apagado total => sí lo borramos)
+    try { KWSR.visual?.resetVisualDedupe?.(); } catch {}
+
+    // VOICE teardown (también limpia dedupe global/tts)
     try { KWSR.voice?.detenerLectura?.(); } catch {}
   }
 
   // ------------------------------------------------------------
   // ensureSourceTimers:
   // Garantiza que SOLO exista el polling del motor efectivo.
-  // Esto reduce lecturas duplicadas:
-  // - Si el motor es VISUAL: NO se hace poll de TRACK.
-  // - Si el motor es TRACK: NO se hace poll de VISUAL.
-  //
-  // Igual dejamos rehook siempre activo porque es el que detecta cambios.
   // ------------------------------------------------------------
   function ensureSourceTimers() {
-    // Track poll
+    // TRACK poll
     const wantTrack = (S.extensionActiva && S.effectiveFuente === "track");
     if (!wantTrack && S.pollTimerTrack) {
       try { clearInterval(S.pollTimerTrack); } catch {}
@@ -88,12 +132,11 @@
     }
     if (wantTrack && !S.pollTimerTrack) {
       S.pollTimerTrack = setInterval(() => {
-        // Fallback polling (por si la plataforma no dispara oncuechange bien)
         KWSR.track?.pollTrackTick?.();
-      }, CFG.pollMsTrack);
+      }, POLL_TRACK_MS);
     }
 
-    // Visual poll
+    // VISUAL poll
     const wantVisual = (S.extensionActiva && S.effectiveFuente === "visual");
     if (!wantVisual && S.pollTimerVisual) {
       try { clearInterval(S.pollTimerVisual); } catch {}
@@ -101,9 +144,9 @@
     }
     if (wantVisual && !S.pollTimerVisual) {
       S.pollTimerVisual = setInterval(() => {
-        // Fallback polling (si el observer no existe o falla)
+        // Ojo: el visual poll NO debe hablar si el observer está activo (lo hace el módulo).
         KWSR.visual?.pollVisualTick?.();
-      }, CFG.pollMsVisual);
+      }, POLL_VISUAL_MS);
     }
 
     // Visual reselection (solo tiene sentido en VISUAL)
@@ -117,7 +160,7 @@
         if (!S.extensionActiva) return;
         if (S.effectiveFuente !== "visual") return;
         KWSR.visual?.visualReselectTick?.();
-      }, CFG.visualReselectMs);
+      }, VISUAL_RESELECT_MS);
     }
   }
 
@@ -126,19 +169,17 @@
   // Crea timers base:
   // - rehook (siempre)
   // - adapters (siempre)
-  // - y luego delega en ensureSourceTimers() para track/visual
+  // - luego ensureSourceTimers() para track/visual
   // ------------------------------------------------------------
   function startTimers() {
     stopTimers();
 
-    // Rehook: detecta cambios de video/track/selector
-    S.rehookTimer = setInterval(() => rehookTick(), CFG.rehookMs);
+    S.rehookTimer = setInterval(() => rehookTick(), REHOOK_MS);
 
-    // Adapters: keepAlive + nonAccessible ticks (si capabilities lo pide)
     S.adaptersTimer = setInterval(() => {
       KWSR.keepAlive?.tick?.();
       KWSR.nonAccessiblePlatforms?.tick?.();
-    }, CFG.adaptersMs);
+    }, ADAPTERS_MS);
 
     // Menús: observer solo si la plataforma declara fixes no accesibles
     const caps = getCaps(getPlatform());
@@ -146,48 +187,40 @@
       try { KWSR.nonAccessiblePlatforms?.startMenuObserver?.(); } catch {}
     }
 
-    // Importante: timers de fuente (TRACK/VISUAL) se manejan acá
     ensureSourceTimers();
   }
 
   // ------------------------------------------------------------
   // restartPipeline:
-  // Reinicia el motor elegido (sin apagar toda la extensión).
-  // Se usa cuando cambia settings (modo, fuente, track index).
-  //
-  // OJO: no reseteamos "todo el mundo", pero sí:
-  // - desenganchamos track/observer
-  // - reseteamos dedupe interno
-  // - recomputamos y rehook
+  // Reinicio fuerte (settings cambiaron / modo cambió / etc.).
+  // Acá SÍ reseteamos dedupe (porque el usuario “pidió reinicio”).
   // ------------------------------------------------------------
   function restartPipeline() {
-    // Track reset
+    // Cortar salida (TTS / dedupe global) para reinicio limpio
+    try { KWSR.voice?.detenerLectura?.(); } catch {}
+
+    // TRACK reset
     try { if (S.currentTrack) S.currentTrack.oncuechange = null; } catch {}
     S.currentTrack = null;
 
-    // Visual reset
+    // VISUAL reset (observer sí, dedupe sí porque es reinicio fuerte)
     try { KWSR.visual?.stopVisualObserver?.(); } catch {}
+    try { KWSR.visual?.resetVisualDedupe?.(); } catch {}
     S.visualNode = null;
     S.visualSelectors = null;
 
-    // Dedupe reset (global)
+    // Dedupe globals “vistos”
     S.lastTrackSeen = "";
     S.lastVisualSeen = "";
-    S.lastEmitText = "";
-    S.lastEmitAt = 0;
 
-    // Dedupe track (si existe)
-    S.lastTrackKey = "";
-    S.lastTrackAt = 0;
-
-    // Recompute
-    S.effectiveFuente = "visual"; // default seguro (rehook ajusta)
+    // Firma y estado
     S.lastSig = "";
+    S.effectiveFuente = "visual";
 
-    // Volvemos a enganchar lo que corresponda
+    // Reenganchar
     rehookTick();
 
-    // Ajusta timers al motor efectivo (evita doble poll)
+    // Ajustar timers al motor efectivo
     ensureSourceTimers();
 
     // UI update
@@ -218,8 +251,6 @@
   // ------------------------------------------------------------
   // Signature:
   // "huella" del estado actual para saber si cambió algo importante
-  // (cambio de video o de track seleccionado / cues).
-  // Si cambia la firma -> reiniciamos el motor correspondiente.
   // ------------------------------------------------------------
   function computeSignature(v, t) {
     const vSig = v ? (v.currentSrc || v.src || "v") : "noV";
@@ -232,16 +263,6 @@
   // ------------------------------------------------------------
   // pickEffectiveSource:
   // Decide si se usa TRACK o VISUAL.
-  //
-  // - Si user puso "auto":
-  //     TRACK si hay tracks usables, si no VISUAL
-  // - Si user forzó "track":
-  //     TRACK
-  // - Si user forzó "visual":
-  //     VISUAL
-  //
-  // Nota: aunque el usuario pida TRACK, si no hay track usable,
-  // el motor TRACK puede fallar y caemos a VISUAL.
   // ------------------------------------------------------------
   function pickEffectiveSource(video) {
     const hasUsableTracks = KWSR.track?.videoHasUsableTracks?.(video) || false;
@@ -256,40 +277,43 @@
   // ------------------------------------------------------------
   // rehookTick:
   // Rehook = "reenganchar".
-  // Cada X ms revisa:
-  // - ¿cambió el video principal?
-  // - ¿cambió la fuente efectiva?
-  // - ¿cambió la firma? (video/track/cues)
-  //
-  // Si cambia algo importante:
-  // - corta el motor anterior
-  // - arranca el motor correcto
-  // - ajusta timers para no duplicar lecturas
   // ------------------------------------------------------------
   function rehookTick() {
     // 1) Descubrir video principal
     const v = KWSR.video?.getMainVideo?.() || null;
 
-    // Si el video cambió, reseteamos referencias y dedupe "visto"
-    if (v !== S.currentVideo) {
-      S.currentVideo = v;
+    // Evento grande: cambió el video O cambió su contenido (src)
+    if (isBigVideoChange(v)) {
+      markCurrentVideo(v);
 
-      // Reset "lo último leído"
       S.lastTrackSeen = "";
       S.lastVisualSeen = "";
 
-      // Desenganchar track anterior
+      // TRACK teardown
       try { if (S.currentTrack) S.currentTrack.oncuechange = null; } catch {}
       S.currentTrack = null;
 
-      // Detener visual observer
+      // VISUAL teardown
+      try { KWSR.visual?.stopVisualObserver?.(); } catch {}
+      // ✅ reset dedupe visual SOLO acá (nuevo contenido real)
+      try { KWSR.visual?.resetVisualDedupe?.(); } catch {}
       S.visualNode = null;
       S.visualSelectors = null;
-      try { KWSR.visual?.stopVisualObserver?.(); } catch {}
+
+      // Firma cambia seguro
+      S.lastSig = "";
+
+      // Al cambiar video, re-chequeamos timers por si cambia fuente
+      // (ej: video nuevo ahora sí tiene tracks).
+      ensureSourceTimers();
 
       // UI update (si existe)
       KWSR.overlay?.updateOverlayTracksList?.();
       KWSR.overlay?.updateOverlayStatus?.();
+    } else {
+      // Si no hubo big change, igual mantenemos currentVideo actualizado por seguridad
+      // (por si el video fue null->same, o ref cambió pero key no).
+      if (v !== S.currentVideo) markCurrentVideo(v);
     }
 
     // Si está OFF, no hacemos nada más.
@@ -303,7 +327,7 @@
       S.effectiveFuente = nextFuente;
 
       if (S.effectiveFuente === "track") {
-        // Cortar VISUAL
+        // Cortar VISUAL (NO reseteamos dedupe histórico acá)
         try { KWSR.visual?.stopVisualObserver?.(); } catch {}
         S.visualNode = null;
         S.visualSelectors = null;
@@ -313,11 +337,11 @@
         S.currentTrack = null;
       }
 
-      // Ajustar timers para que solo pollee el motor activo
       ensureSourceTimers();
+      S.lastSig = ""; // fuerza arranque del motor correcto en este tick
     }
 
-    // 3) Calcular signature del estado
+    // 3) Calcular signature
     const bestTrack =
       (S.effectiveFuente === "track")
         ? (KWSR.track?.pickBestTrack?.(S.currentVideo) || null)
@@ -367,25 +391,31 @@
       // UI recién cuando ON
       setUIVisible(true);
 
+      // Encendido real => reinicio limpio de dedupe grande
+      try { KWSR.voice?.detenerLectura?.(); } catch {}
+      try { KWSR.visual?.resetVisualDedupe?.(); } catch {}
+      S.lastTrackSeen = "";
+      S.lastVisualSeen = "";
+      S.lastSig = "";
+
       KWSR.voice?.cargarVozES?.();
       KWSR.toast?.notify?.(`🟢 KathWare ON — ${label}`);
 
-      // Timers base
+      // Guardar video key apenas encendemos (evita primer rehook "fantasma")
+      markCurrentVideo(KWSR.video?.getMainVideo?.() || null);
+
       startTimers();
 
-      // Fuente default antes de rehook (rehook decide final)
+      // Default antes de rehook (rehook decide final)
       S.effectiveFuente = "visual";
-      S.lastSig = "";
 
-      // Enganchar motores
       rehookTick();
 
     } else {
       KWSR.log?.("Toggle OFF", { platform: p });
-
       KWSR.toast?.notify?.(`🔴 KathWare OFF — ${label}`);
 
-      // Apaga todo (motores + observers + timers)
+      // Apagado total
       stopAll();
 
       // Oculta UI
@@ -397,15 +427,20 @@
   // init:
   // Se ejecuta una vez cuando se carga el content script.
   // NO crea UI.
-  // Solo carga settings y deja listo state.
   // ------------------------------------------------------------
   function init() {
     const after = () => {
-      S.currentVideo = KWSR.video?.getMainVideo?.() || null;
+      markCurrentVideo(KWSR.video?.getMainVideo?.() || null);
+
+      // Defaults de state (por si storage todavía no puso nada)
+      if (!S.fuenteSubGlobal) S.fuenteSubGlobal = "auto";
+      if (!S.modoNarradorGlobal) S.modoNarradorGlobal = "lector";
+
       KWSR.log?.("content cargado (UI lazy)", {
         host: location.hostname,
         platform: getPlatform()
       });
+
       // Importante: no overlay, no panel, no live region en init.
     };
 

@@ -8,34 +8,35 @@
 //    - Sirve para abrir/cerrar el panel
 //
 // 2) "Panel" (caja)
-//    - Muestra estado (ON/OFF, modo, fuente, plataforma, track actual)
-//    - Muestra el último subtítulo leído (solo como feedback visual)
-//    - Permite cambiar:
+//    - Muestra estado (ON/OFF, modo, plataforma, motor efectivo)
+//    - Muestra el último subtítulo leído (solo feedback visual)
+//    - Permite cambiar SOLO:
 //        - modo de lectura (off / sintetizador / lector)
-//        - fuente (auto / track / visual)
-//        - trackIndex (pista) si existen textTracks
+//
 //    - Incluye controles accesibles del reproductor (play/pause/seek/vol/etc.)
 //
 // IMPORTANTE (Lazy UI):
 // - Este overlay NO se crea automáticamente al cargar la página.
 // - Se crea recién cuando el pipeline llama a ensureOverlay() (cuando el usuario activa ON).
 //
+// DECISIÓN IMPORTANTE (para evitar confusión / bugs):
+// - NO hay selector TRACK/VISUAL en el overlay.
+// - NO hay selector de pista (trackIndex).
+// - El motor se elige en pipeline automáticamente (TRACK si es usable, si no VISUAL).
+//
 // ACCESIBILIDAD:
-/// - Botones con aria-label.
-/// - Panel simple, controlable por teclado.
-/// - Evitamos interferir cuando el usuario está escribiendo (inputs/textarea/etc.).
+// - Botones con aria-label.
+// - Panel simple, controlable por teclado.
+// - No interferimos cuando el usuario está escribiendo (inputs/textarea/etc.).
 //
 // SEGURIDAD (MV3 / recarga de extensión):
 // - A veces Chrome invalida el "contexto" del content-script si la extensión se recarga
 //   pero la pestaña NO se recargó.
-// - En ese caso, llamadas como storage.set o runtime.* pueden fallar.
-// - Por eso blindamos esos handlers con safeExtCall() y mostramos un toast.
+// - Blindamos los handlers con safeExtCall() y mostramos un toast.
 //
 // NOTA SOBRE "NO LEERNOS A NOSOTROS":
-// - Nuestro overlay está dentro de #kathware-overlay-root.
-// - Los motores VISUAL/adapters filtran nodos con closest("#kathware-overlay-root", etc).
-//   Eso evita que el lector agarre el texto de nuestra UI.
-//
+// - Todo el overlay vive dentro de #kathware-overlay-root.
+// - El motor VISUAL debe excluir este root para NO auto-leerse.
 // ====================================================
 
 (() => {
@@ -61,9 +62,6 @@
   // ------------------------------------------------------------
   // 1) Manejo de error: "Extension context invalidated"
   // ------------------------------------------------------------
-
-  // Detecta errores típicos cuando la extensión se recarga
-  // pero la pestaña aún usa el content-script viejo (invalida el contexto).
   function isContextInvalidatedError(err) {
     const msg = String(err?.message || err || "");
     return (
@@ -74,27 +72,19 @@
     );
   }
 
-  // Muestra aviso amigable y esconde UI para evitar comportamientos raros
   function notifyReloadNeeded() {
     try {
       KWSR.toast?.notify?.("⚠️ La extensión se recargó. Recargá la página (F5) y probá de nuevo.");
     } catch {}
 
-    // Escondemos el panel y el root para que el usuario no interactúe con algo roto
-    try {
-      if (S.overlayPanel) S.overlayPanel.style.display = "none";
-    } catch {}
-    try {
-      if (S.overlayRoot) S.overlayRoot.style.display = "none";
-    } catch {}
+    // Ocultamos UI para evitar interacción con un content-script “zombie”
+    try { if (S.overlayPanel) S.overlayPanel.style.display = "none"; } catch {}
+    try { if (S.overlayRoot)  S.overlayRoot.style.display  = "none"; } catch {}
   }
 
-  // Wrapper para ejecutar llamadas que dependen del runtime/storage de la extensión.
-  // Si el contexto está invalidado, avisamos y no reventamos.
   function safeExtCall(fn) {
     try {
-      // En Chrome MV3: si chrome.runtime existe pero runtime.id no,
-      // suele indicar invalidación del contexto.
+      // En MV3: si chrome.runtime existe pero runtime.id no, suele ser invalidación
       if (typeof chrome !== "undefined" && chrome?.runtime && !chrome.runtime.id) {
         throw new Error("Extension context invalidated.");
       }
@@ -104,7 +94,6 @@
         notifyReloadNeeded();
         return;
       }
-      // Si no es ese error específico, lo re-lanzamos para no ocultar bugs reales.
       throw e;
     }
   }
@@ -112,8 +101,6 @@
   // ------------------------------------------------------------
   // 2) Construcción del overlay (root + panel + pill)
   // ------------------------------------------------------------
-
-  // Crea el overlay completo SOLO si todavía no existe.
   function ensureOverlay() {
     if (S.overlayRoot) return;
 
@@ -126,10 +113,10 @@
       bottom: "14px",
       zIndex: "2147483647",
       fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-      display: "none" // arranca oculto, el pipeline lo muestra al activar ON
+      display: "none"
     });
 
-    // Panel: se muestra/oculta al abrir/cerrar desde pill u hotkey
+    // Panel
     const panel = document.createElement("div");
     panel.id = "kathware-overlay-panel";
     Object.assign(panel.style, {
@@ -137,54 +124,74 @@
       marginBottom: "10px",
       padding: "12px 14px",
       borderRadius: "12px",
-      background: "rgba(0,0,0,0.78)",
+      background: "rgba(0,0,0,0.80)",
       color: "#fff",
-      maxWidth: "75vw",
-      boxShadow: "0 8px 24px rgba(0,0,0,0.25)"
+      maxWidth: "min(520px, 85vw)",
+      boxShadow: "0 10px 28px rgba(0,0,0,0.30)",
+      backdropFilter: "blur(6px)"
     });
 
-    // Estado (ON/OFF + modo + fuente + plataforma + info track)
+    // Status
     const status = document.createElement("div");
-    Object.assign(status.style, { opacity: ".9", fontSize: "13px", marginBottom: "6px" });
+    Object.assign(status.style, {
+      opacity: ".92",
+      fontSize: "13px",
+      marginBottom: "8px"
+    });
 
-    // Texto: último subtítulo leído (solo feedback visual)
+    // Texto: último subtítulo leído (feedback visual)
     const text = document.createElement("div");
-    Object.assign(text.style, { whiteSpace: "pre-wrap", fontSize: "16px", lineHeight: "1.35" });
+    text.setAttribute("aria-label", "Último subtítulo detectado");
+    Object.assign(text.style, {
+      whiteSpace: "pre-wrap",
+      fontSize: "16px",
+      lineHeight: "1.35",
+      padding: "8px 10px",
+      borderRadius: "10px",
+      background: "rgba(255,255,255,0.10)"
+    });
 
-    // Settings row: modo + fuente
+    // Row: modo de lectura (único setting expuesto)
     const settingsRow = document.createElement("div");
     Object.assign(settingsRow.style, {
       display: "grid",
-      gridTemplateColumns: "1fr 1fr",
+      gridTemplateColumns: "1fr",
       gap: "8px",
       marginTop: "10px"
     });
 
-    // Select Modo
+    const modoLabel = document.createElement("div");
+    modoLabel.textContent = "Modo de lectura";
+    Object.assign(modoLabel.style, { fontSize: "13px", opacity: ".9" });
+
     const modoSelect = document.createElement("select");
     modoSelect.setAttribute("aria-label", "Modo de lectura");
     modoSelect.innerHTML = `
-      <option value="off">Desactivado</option>
-      <option value="sintetizador">Voz</option>
       <option value="lector">Lector</option>
+      <option value="sintetizador">Voz</option>
+      <option value="off">Desactivado</option>
     `;
+    Object.assign(modoSelect.style, {
+      width: "100%",
+      padding: "8px 10px",
+      borderRadius: "10px",
+      border: "0",
+      outline: "none"
+    });
 
-    // Select Fuente
-    const fuenteSelect = document.createElement("select");
-    fuenteSelect.setAttribute("aria-label", "Fuente de texto");
-    fuenteSelect.innerHTML = `
-      <option value="auto">Auto</option>
-      <option value="track">TRACK</option>
-      <option value="visual">VISUAL</option>
-    `;
+    settingsRow.append(modoLabel, modoSelect);
 
-    settingsRow.append(modoSelect, fuenteSelect);
-
-    // Select Track: se llena según video.textTracks
-    const trackSelect = document.createElement("select");
-    trackSelect.setAttribute("aria-label", "Pista de subtítulos");
-    trackSelect.style.marginTop = "8px";
-    trackSelect.innerHTML = `<option value="0">Pista 1</option>`;
+    // Ayuda hotkeys (texto fijo, no interactivo)
+    const hotkeys = document.createElement("div");
+    hotkeys.setAttribute("aria-label", "Atajos de teclado");
+    Object.assign(hotkeys.style, {
+      marginTop: "10px",
+      fontSize: "13px",
+      opacity: ".9",
+      lineHeight: "1.35"
+    });
+    hotkeys.textContent =
+      "Atajos: Alt+Shift+K (ON/OFF) · Alt+Shift+L (cambiar modo) · Alt+Shift+O (abrir/cerrar panel)";
 
     // Controles del reproductor (botones)
     const controlsRow = document.createElement("div");
@@ -195,23 +202,30 @@
       marginTop: "10px"
     });
 
-    // Helper para crear botones de forma consistente
     const mkBtn = (label, onClick, aria) => {
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = label;
       if (aria) b.setAttribute("aria-label", aria);
       Object.assign(b.style, {
-        padding: "6px 10px",
+        padding: "7px 10px",
         borderRadius: "10px",
         border: "0",
-        cursor: "pointer"
+        cursor: "pointer",
+        background: "rgba(255,255,255,0.14)",
+        color: "#fff"
       });
       b.addEventListener("click", onClick);
+      b.addEventListener("keydown", (e) => {
+        // Enter/Espacio activan (a veces sitios interceptan space raro)
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          try { b.click(); } catch {}
+        }
+      });
       return b;
     };
 
-    // Botones básicos (operan sobre S.currentVideo)
     const btnPlay  = mkBtn("▶️", () => S.currentVideo?.play?.(), "Reproducir");
     const btnPause = mkBtn("⏸️", () => S.currentVideo?.pause?.(), "Pausar");
     const btnBack  = mkBtn("⏪", () => seekBy(-CFG.seekBig), "Atrasar 10 segundos");
@@ -223,10 +237,10 @@
 
     controlsRow.append(btnPlay, btnPause, btnBack, btnFwd, btnMute, btnCC, btnFull, btnClose);
 
-    // Composición del panel
-    panel.append(status, text, settingsRow, trackSelect, controlsRow);
+    // Composición del panel (orden: status -> texto -> modo -> hotkeys -> controles)
+    panel.append(status, text, settingsRow, hotkeys, controlsRow);
 
-    // Pill: botón redondo "KW"
+    // Pill
     const pill = document.createElement("button");
     pill.type = "button";
     pill.setAttribute("aria-label", "Abrir KathWare SubtitleReader");
@@ -237,84 +251,52 @@
       borderRadius: "999px",
       border: "0",
       cursor: "pointer",
-      background: "rgba(0,0,0,0.78)",
+      background: "rgba(0,0,0,0.80)",
       color: "#fff",
-      fontWeight: "700",
-      boxShadow: "0 8px 24px rgba(0,0,0,0.25)"
+      fontWeight: "800",
+      letterSpacing: ".5px",
+      boxShadow: "0 10px 28px rgba(0,0,0,0.30)"
     });
 
-    // Click: toggle panel abierto/cerrado
     pill.addEventListener("click", () => {
       const open = panel.style.display !== "none";
       setPanelOpen(!open);
     });
 
-    // Montaje final en el DOM
     root.append(panel, pill);
     document.documentElement.appendChild(root);
 
-    // Guardamos referencias en el estado global
+    // Guardamos referencias
     S.overlayRoot = root;
     S.overlayPanel = panel;
     S.overlayPill = pill;
     S.overlayStatus = status;
     S.overlayText = text;
-    S.overlayTrackSelect = trackSelect;
     S.overlayModoSelect = modoSelect;
-    S.overlayFuenteSelect = fuenteSelect;
 
     // ------------------------------------------------------------
-    // 3) Listeners (configuración) - BLINDADOS con safeExtCall
+    // 3) Listener de modo (blindado con safeExtCall)
     // ------------------------------------------------------------
-
-    // Cambiar modo (lector / sintetizador / off)
     modoSelect.addEventListener("change", () => {
       safeExtCall(() => {
         S.modoNarradorGlobal = modoSelect.value;
 
-        // Persistimos para que el popup y la próxima carga lo recuerden
-        KWSR.api?.storage?.local?.set?.({ modoNarrador: S.modoNarradorGlobal });
+        // Persistimos para popup / próximas cargas
+        try { KWSR.api?.storage?.local?.set?.({ modoNarrador: S.modoNarradorGlobal }); } catch {}
 
-        // Si el usuario apaga, detenemos lectura inmediatamente
-        if (S.modoNarradorGlobal === "off") KWSR.voice?.detenerLectura?.();
-
-        updateOverlayStatus();
-      });
-    });
-
-    // Cambiar fuente (auto / track / visual)
-    fuenteSelect.addEventListener("change", () => {
-      safeExtCall(() => {
-        S.fuenteSubGlobal = fuenteSelect.value;
-        KWSR.api?.storage?.local?.set?.({ fuenteSub: S.fuenteSubGlobal });
-
-        // Si está ON, reiniciamos pipeline para aplicar cambio
-        if (S.extensionActiva) KWSR.pipeline?.restartPipeline?.();
-
-        updateOverlayStatus();
-      });
-    });
-
-    // Cambiar pista (si existen tracks)
-    trackSelect.addEventListener("change", () => {
-      safeExtCall(() => {
-        const idx = Number(trackSelect.value);
-        if (Number.isFinite(idx)) {
-          S.trackIndexGlobal = idx;
-          KWSR.api?.storage?.local?.set?.({ trackIndex: S.trackIndexGlobal });
-
-          if (S.extensionActiva) KWSR.pipeline?.restartPipeline?.();
-          updateOverlayStatus();
+        // Si apaga, detenemos lectura al toque
+        if (S.modoNarradorGlobal === "off") {
+          try { KWSR.voice?.detenerLectura?.(); } catch {}
         }
+
+        updateOverlayStatus();
       });
     });
   }
 
   // ------------------------------------------------------------
-  // 4) Mostrar / ocultar overlay y panel
+  // 3) Mostrar / ocultar overlay y panel
   // ------------------------------------------------------------
-
-  // Muestra/oculta root entero (pill + panel)
   function setOverlayVisible(visible) {
     if (!S.overlayRoot) return;
     S.overlayRoot.style.display = visible ? "block" : "none";
@@ -323,68 +305,36 @@
     }
   }
 
-  // Abre/cierra panel
   function setPanelOpen(open) {
     ensureOverlay();
     setOverlayVisible(true);
     S.overlayPanel.style.display = open ? "block" : "none";
   }
 
-  // Actualiza texto leído (solo feedback visual)
   function updateOverlayText(t) {
     if (!S.overlayRoot) return;
-    S.overlayText.textContent = t || "";
 
-    // Si está activado en config, abrir panel cuando llegan subtítulos
-    if (CFG.autoOpenPanelOnSubs && t && String(t).trim()) setPanelOpen(true);
-  }
-
-  // ------------------------------------------------------------
-  // 5) Tracks list + status
-  // ------------------------------------------------------------
-
-  function describeTrack(t) {
-    if (!t) return "Sin track";
-    let cuesLen = "?";
-    try { cuesLen = t.cues ? t.cues.length : 0; } catch {}
-    return `${t.label || "(sin label)"} lang=${t.language || "??"} mode=${t.mode} cues=${cuesLen}`;
-  }
-
-  // Carga las pistas disponibles del video principal
-  function updateOverlayTracksList() {
-    if (!S.overlayRoot) return;
-    const v = S.currentVideo;
-    const tracks = v?.textTracks ? Array.from(v.textTracks) : [];
-    const sel = S.overlayTrackSelect;
-
-    sel.innerHTML = "";
-
-    if (!tracks.length) {
-      const opt = document.createElement("option");
-      opt.value = "0";
-      opt.textContent = "Sin pistas";
-      sel.appendChild(opt);
-      sel.disabled = true;
+    const str = String(t ?? "");
+    // Si no querés feedback visual, poné CFG.overlayShowText = false
+    if (CFG.overlayShowText === false) {
+      S.overlayText.textContent = "";
       return;
     }
 
-    tracks.forEach((t, idx) => {
-      const opt = document.createElement("option");
-      opt.value = String(idx);
-      opt.textContent = (t.label || t.language || `Pista ${idx + 1}`);
-      sel.appendChild(opt);
-    });
+    S.overlayText.textContent = str;
 
-    sel.disabled = false;
-    sel.value = String(clamp(S.trackIndexGlobal, 0, tracks.length - 1));
+    // Si querés abrir panel al llegar subtítulos:
+    if (CFG.autoOpenPanelOnSubs && str.trim()) setPanelOpen(true);
   }
 
-  // Línea de estado (para que el usuario entienda qué está pasando)
+  // ------------------------------------------------------------
+  // 4) Status (simple y “verdadero”)
+  // ------------------------------------------------------------
   function updateOverlayStatus() {
     if (!S.overlayRoot) return;
 
-    const label =
-      KWSR.platforms?.platformLabel?.(KWSR.platforms?.getPlatform?.() || "generic") || "Sitio";
+    const p = KWSR.platforms?.getPlatform?.() || "generic";
+    const label = KWSR.platforms?.platformLabel?.(p) || "Sitio";
 
     const enabled = S.extensionActiva ? "🟢 ON" : "🔴 OFF";
 
@@ -392,25 +342,29 @@
       S.modoNarradorGlobal === "lector" ? "🧏" :
       S.modoNarradorGlobal === "sintetizador" ? "🗣️" : "🙊";
 
-    const src =
-      S.fuenteSubGlobal === "track" ? "🎛️TRACK"
-      : S.fuenteSubGlobal === "visual" ? "👀VISUAL"
-      : `🤖AUTO→${String(S.effectiveFuente || "visual").toUpperCase()}`;
+    // Motor efectivo (info, no editable desde overlay)
+    const engine =
+      (S.effectiveFuente === "track") ? "🎛️ TRACK" :
+      (S.effectiveFuente === "visual") ? "👀 VISUAL" :
+      "🤖 AUTO";
 
-    const trackInfo = S.currentTrack ? describeTrack(S.currentTrack) : "Sin track";
+    if (S.overlayModoSelect) S.overlayModoSelect.value = S.modoNarradorGlobal || "lector";
 
-    // Sincronizamos selects con el estado actual
-    if (S.overlayModoSelect) S.overlayModoSelect.value = S.modoNarradorGlobal;
-    if (S.overlayFuenteSelect) S.overlayFuenteSelect.value = S.fuenteSubGlobal;
+    S.overlayStatus.textContent = `${enabled} ${modeEmoji} | ${engine} | ${label}`;
+  }
 
-    S.overlayStatus.textContent = `${enabled} ${modeEmoji} | ${src} | ${label} | ${trackInfo}`;
+  // ------------------------------------------------------------
+  // 5) “API” que el pipeline espera (compat): no rompemos llamadas viejas
+  // ------------------------------------------------------------
+  function updateOverlayTracksList() {
+    // Ya NO hay selector de pista.
+    // Dejamos esta función como “compat” para que pipeline pueda llamarla sin romper.
+    // Si querés, acá podrías actualizar status con “tracks: N”, pero no hace falta.
   }
 
   // ------------------------------------------------------------
   // 6) Helpers del reproductor (botones + hotkeys)
   // ------------------------------------------------------------
-
-  // Salto en tiempo (seek)
   function seekBy(delta) {
     const v = S.currentVideo;
     if (!v) return;
@@ -420,27 +374,27 @@
     } catch {}
   }
 
-  // Mute/unmute
   function toggleMute() {
     const v = S.currentVideo;
     if (!v) return;
     try { v.muted = !v.muted; } catch {}
   }
 
-  // Fullscreen (puede romper lectura en algunos sitios)
   function requestFull() {
     const v = S.currentVideo;
     if (!v) return;
 
-    KWSR.toast?.notify?.("⚠️ En pantalla completa la lectura automática puede fallar.");
+    try {
+      KWSR.toast?.notify?.("⚠️ En pantalla completa la lectura automática puede fallar.");
+    } catch {}
+
     try { v.requestFullscreen?.(); } catch {}
   }
 
-  // Toggle captions (si hay tracks accesibles)
   function toggleCaptions() {
     const v = S.currentVideo;
     if (!v?.textTracks?.length) {
-      KWSR.toast?.notify?.("⚠️ No hay pistas de subtítulos para alternar.");
+      try { KWSR.toast?.notify?.("⚠️ No hay pistas de subtítulos para alternar."); } catch {}
       return;
     }
 
@@ -449,31 +403,27 @@
 
     try {
       if (t.mode === "showing") t.mode = "hidden";
-      else if (t.mode === "hidden") t.mode = "showing";
-      else t.mode = "hidden";
+      else t.mode = "showing";
 
       S.currentTrack = t;
       updateOverlayStatus();
-      KWSR.toast?.notify?.(`CC: ${t.mode === "showing" ? "ON" : "OFF"}`);
+
+      try { KWSR.toast?.notify?.(`CC: ${t.mode === "showing" ? "ON" : "OFF"}`); } catch {}
     } catch {}
   }
 
-  // Hotkeys del reproductor (cuando el panel está abierto, o cuando la plataforma lo necesita)
   function handlePlayerHotkeys(e) {
     if (!S.extensionActiva) return false;
     if (isTyping()) return false;
 
-    // No queremos chocar con combinaciones del sistema/lectores
+    // No chocamos con combinaciones del sistema/lectores
     if (e.ctrlKey || e.altKey || e.metaKey) return false;
 
     const panelOpen = S.overlayPanel && S.overlayPanel.style.display !== "none";
 
-    // Por defecto: hotkeys del player solo si panel está abierto.
-    // Excepción: plataformas con UI difícil (nonAccessibleFixes).
+    // Player hotkeys solo si el panel está abierto, salvo plataformas “difíciles”
     const p = KWSR.platforms?.getPlatform?.() || "generic";
-    const caps =
-      KWSR.platforms?.platformCapabilities?.(p) || { keepAlive: false, nonAccessibleFixes: false };
-
+    const caps = KWSR.platforms?.platformCapabilities?.(p) || { nonAccessibleFixes: false };
     if (!panelOpen && !caps.nonAccessibleFixes) return false;
 
     const key = (e.key || "").toLowerCase();
@@ -513,15 +463,24 @@
     return false;
   }
 
-  // Export público del módulo
+  // Export público
   KWSR.overlay = {
     ensureOverlay,
     setOverlayVisible,
     setPanelOpen,
     updateOverlayText,
-    describeTrack,
-    updateOverlayTracksList,
+    updateOverlayTracksList, // compat
     updateOverlayStatus,
     handlePlayerHotkeys
   };
+
+  /*
+  ===========================
+  Cambios aplicados (resumen)
+  ===========================
+  - FIX: Overlay minimal: se eliminaron selector TRACK/VISUAL y selector de pista.
+  - FIX: Status muestra motor efectivo (track/visual) pero NO es editable desde overlay.
+  - FIX: Se agregó ayuda de hotkeys dentro del panel.
+  - Compat: updateOverlayTracksList() queda como no-op para no romper pipeline.
+  */
 })();
