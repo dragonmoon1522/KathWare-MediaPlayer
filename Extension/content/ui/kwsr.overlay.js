@@ -1,6 +1,6 @@
-// ====================================================
+// -----------------------------------------------------------------------------
 // KathWare SubtitleReader - kwsr.overlay.js
-// ====================================================
+// -----------------------------------------------------------------------------
 //
 // Este módulo crea la UI flotante (overlay) dentro de la página:
 //
@@ -37,7 +37,7 @@
 // NOTA SOBRE "NO LEERNOS A NOSOTROS":
 // - Todo el overlay vive dentro de #kathware-overlay-root.
 // - El motor VISUAL debe excluir este root para NO auto-leerse.
-// ====================================================
+// -----------------------------------------------------------------------------
 
 (() => {
   const KWSR = window.KWSR;
@@ -59,9 +59,9 @@
       return false;
     });
 
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   // 1) Manejo de error: "Extension context invalidated"
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   function isContextInvalidatedError(err) {
     const msg = String(err?.message || err || "");
     return (
@@ -98,9 +98,9 @@
     }
   }
 
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   // 2) Construcción del overlay (root + panel + pill)
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   function ensureOverlay() {
     if (S.overlayRoot) return;
 
@@ -226,6 +226,9 @@
       return b;
     };
 
+    // Nota: CFG.seekBig/seekSmall deberían existir en CFG default.
+    // Si no existen, esto devuelve NaN -> seekBy lo clampa, pero igual no mueve.
+    // (Micro-fix opcional: setear defaults en CFG al cargar.)
     const btnPlay  = mkBtn("▶️", () => S.currentVideo?.play?.(), "Reproducir");
     const btnPause = mkBtn("⏸️", () => S.currentVideo?.pause?.(), "Pausar");
     const btnBack  = mkBtn("⏪", () => seekBy(-CFG.seekBig), "Atrasar 10 segundos");
@@ -274,9 +277,9 @@
     S.overlayText = text;
     S.overlayModoSelect = modoSelect;
 
-    // ------------------------------------------------------------
+    // -----------------------------------------------------------------------------
     // 3) Listener de modo (blindado con safeExtCall)
-    // ------------------------------------------------------------
+    // -----------------------------------------------------------------------------
     modoSelect.addEventListener("change", () => {
       safeExtCall(() => {
         S.modoNarradorGlobal = modoSelect.value;
@@ -294,9 +297,9 @@
     });
   }
 
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   // 3) Mostrar / ocultar overlay y panel
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   function setOverlayVisible(visible) {
     if (!S.overlayRoot) return;
     S.overlayRoot.style.display = visible ? "block" : "none";
@@ -315,6 +318,7 @@
     if (!S.overlayRoot) return;
 
     const str = String(t ?? "");
+
     // Si no querés feedback visual, poné CFG.overlayShowText = false
     if (CFG.overlayShowText === false) {
       S.overlayText.textContent = "";
@@ -327,9 +331,9 @@
     if (CFG.autoOpenPanelOnSubs && str.trim()) setPanelOpen(true);
   }
 
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   // 4) Status (simple y “verdadero”)
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   function updateOverlayStatus() {
     if (!S.overlayRoot) return;
 
@@ -353,24 +357,27 @@
     S.overlayStatus.textContent = `${enabled} ${modeEmoji} | ${engine} | ${label}`;
   }
 
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   // 5) “API” que el pipeline espera (compat): no rompemos llamadas viejas
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   function updateOverlayTracksList() {
     // Ya NO hay selector de pista.
     // Dejamos esta función como “compat” para que pipeline pueda llamarla sin romper.
-    // Si querés, acá podrías actualizar status con “tracks: N”, pero no hace falta.
   }
 
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   // 6) Helpers del reproductor (botones + hotkeys)
-  // ------------------------------------------------------------
+  // -----------------------------------------------------------------------------
   function seekBy(delta) {
     const v = S.currentVideo;
     if (!v) return;
+
     try {
-      const dur = Number.isFinite(v.duration) ? v.duration : (v.currentTime + delta);
-      v.currentTime = clamp((v.currentTime || 0) + delta, 0, dur);
+      const d = Number(delta || 0);
+      if (!Number.isFinite(d) || d === 0) return;
+
+      const dur = Number.isFinite(v.duration) ? v.duration : (v.currentTime + d);
+      v.currentTime = clamp((v.currentTime || 0) + d, 0, dur);
     } catch {}
   }
 
@@ -436,10 +443,10 @@
       return true;
     }
 
-    if (key === "arrowleft")  { e.preventDefault(); seekBy(e.shiftKey ? -CFG.seekBig : -CFG.seekSmall); return true; }
-    if (key === "arrowright") { e.preventDefault(); seekBy(e.shiftKey ? +CFG.seekBig : +CFG.seekSmall); return true; }
-    if (key === "j") { e.preventDefault(); seekBy(-CFG.seekBig); return true; }
-    if (key === "l") { e.preventDefault(); seekBy(+CFG.seekBig); return true; }
+    if (key === "arrowleft")  { e.preventDefault(); seekBy(e.shiftKey ? -(CFG.seekBig || 10) : -(CFG.seekSmall || 5)); return true; }
+    if (key === "arrowright") { e.preventDefault(); seekBy(e.shiftKey ? +(CFG.seekBig || 10) : +(CFG.seekSmall || 5)); return true; }
+    if (key === "j") { e.preventDefault(); seekBy(-(CFG.seekBig || 10)); return true; }
+    if (key === "l") { e.preventDefault(); seekBy( +(CFG.seekBig || 10)); return true; }
     if (key === "m") { e.preventDefault(); toggleMute(); return true; }
     if (key === "c") { e.preventDefault(); toggleCaptions(); return true; }
     if (key === "f") { e.preventDefault(); requestFull(); return true; }
@@ -448,7 +455,7 @@
       e.preventDefault();
       const v = S.currentVideo;
       if (!v) return true;
-      try { v.volume = clamp((v.volume ?? 1) + CFG.volStep, 0, 1); } catch {}
+      try { v.volume = clamp((v.volume ?? 1) + (CFG.volStep || 0.05), 0, 1); } catch {}
       return true;
     }
 
@@ -456,7 +463,7 @@
       e.preventDefault();
       const v = S.currentVideo;
       if (!v) return true;
-      try { v.volume = clamp((v.volume ?? 1) - CFG.volStep, 0, 1); } catch {}
+      try { v.volume = clamp((v.volume ?? 1) - (CFG.volStep || 0.05), 0, 1); } catch {}
       return true;
     }
 
@@ -474,13 +481,4 @@
     handlePlayerHotkeys
   };
 
-  /*
-  ===========================
-  Cambios aplicados (resumen)
-  ===========================
-  - FIX: Overlay minimal: se eliminaron selector TRACK/VISUAL y selector de pista.
-  - FIX: Status muestra motor efectivo (track/visual) pero NO es editable desde overlay.
-  - FIX: Se agregó ayuda de hotkeys dentro del panel.
-  - Compat: updateOverlayTracksList() queda como no-op para no romper pipeline.
-  */
 })();
