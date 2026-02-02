@@ -1,6 +1,37 @@
-// ====================================================
+// -----------------------------------------------------------------------------
 // KathWare SubtitleReader - kwsr.voice.js
-// ====================================================
+// -----------------------------------------------------------------------------
+//
+// OBJETIVO
+// --------
+// Este módulo define la “salida” final del subtítulo.
+// Es decir: cuando ya tenemos un texto (TRACK o VISUAL), acá decidimos:
+//
+// - ¿Se lee o no se lee ahora?
+// - Si se lee: ¿por LECTOR (aria-live) o por TTS (speechSynthesis)?
+// - ¿Cómo evitamos repetir lo mismo 2, 3, 5 veces? (dedupe global)
+// - ¿Cómo manejamos “rolling captions” (Max/Netflix) leyendo solo lo nuevo? (delta)
+//
+// MODOS DE NARRADOR
+// -----------------
+// S.modoNarradorGlobal puede ser:
+// - "lector"       -> usa aria-live (el lector de pantalla lo lee)
+// - "sintetizador" -> usa speechSynthesis (voz del sistema)
+// - "off"          -> no lee nada
+//
+// IMPORTANTE
+// ----------
+// Este módulo NO detecta subtítulos.
+// Solo recibe texto y lo convierte en “salida accesible”.
+//
+// Notas MV3 / estabilidad
+// -----------------------
+// - speechSynthesis puede colgarse o fallar en algunos sitios/dispositivos.
+// - Si falla, hacemos fallback a "lector" (opcional).
+// - Hay watchdog anti-colgado para evitar que la cola de TTS quede pegada.
+//
+// -----------------------------------------------------------------------------
+
 
 (() => {
   const KWSR = window.KWSR;
@@ -8,18 +39,24 @@
 
   const S = KWSR.state;
   const CFG = KWSR.CFG;
-  const { normalize } = KWSR.utils;
+  const normalize = KWSR.utils?.normalize || ((x) => String(x ?? "").trim());
 
+  // Estado interno del módulo (no se guarda en storage)
   let lastSpeakAt = 0;
   let ttsBrokenUntil = 0;
   let lastTtsError = "";
   let watchdogTimer = null;
 
+  // Esto controla el “auto fallback”:
+  // si TTS falla, pasamos a "lector" para no dejar a la usuaria sin subtítulos.
   const AUTO_SWITCH_TO_READER_ON_TTS_FAIL = true;
 
-  // ------------------------------------------------------------
-  // Helpers plataforma / videoTime
-  // ------------------------------------------------------------
+  // Evitar re-enganchar onvoiceschanged muchas veces
+  let voicesHooked = false;
+
+  // ---------------------------------------------------------------------------
+  // Helpers: plataforma / videoTime
+  // ---------------------------------------------------------------------------
   function platform() {
     try { return KWSR.platforms?.getPlatform?.() || "generic"; } catch { return "generic"; }
   }
@@ -40,9 +77,18 @@
     }
   }
 
-  // ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
   // Live Region (aria-live)
-  // ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  //
+  // ¿Qué es?
+  // - Un div “invisible” que el lector de pantalla escucha.
+  // - Al cambiar el texto, el lector lo anuncia.
+  //
+  // Por qué role="status" y aria-live="polite"
+  // - status: anuncia cambios sin robar foco.
+  // - polite: no interrumpe bruscamente lo que el usuario está escuchando.
+  //
   function ensureLiveRegion() {
     if (S.liveRegion) return;
 
@@ -52,6 +98,7 @@
     div.setAttribute("aria-live", "polite");
     div.setAttribute("aria-atomic", "true");
 
+    // Estilo “visualmente oculto” (clásico accesible)
     Object.assign(div.style, {
       position: "fixed",
       left: "-9999px",
@@ -68,6 +115,9 @@
     S.liveRegion = div;
   }
 
+  // pushToLiveRegion(text)
+  // - Truco: limpiar primero y luego setear con timeout corto.
+  // - Algunos lectores no “re-anuncian” si el texto se repite rápido.
   function pushToLiveRegion(text) {
     ensureLiveRegion();
     try {
@@ -79,9 +129,9 @@
     } catch {}
   }
 
-  // ------------------------------------------------------------
-  // TTS
-  // ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // TTS (speechSynthesis)
+  // ---------------------------------------------------------------------------
   function isTTSAvailable() {
     return (
       typeof speechSynthesis !== "undefined" &&
@@ -89,30 +139,43 @@
     );
   }
 
+  // cargarVozES()
+  // - Selecciona una voz “es-AR” si existe.
+  // - Si no existe, usa alguna “es-*”.
+  // - Si nada, usa la primera disponible.
+  //
+  // Nota:
+  // - En muchos navegadores, getVoices() devuelve vacío hasta que
+  //   el sistema “carga” voces. Por eso usamos onvoiceschanged una vez.
   function cargarVozES() {
     try {
       if (!isTTSAvailable()) return;
 
-      const voces = speechSynthesis.getVoices?.() || [];
-      S.voiceES =
-        voces.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
-        voces.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
-        voces.find(v => (v.lang || "").toLowerCase().includes("es")) ||
-        voces[0] ||
-        null;
-
-      speechSynthesis.onvoiceschanged = () => {
-        try {
-          const v2 = speechSynthesis.getVoices?.() || [];
-          S.voiceES =
-            v2.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
-            v2.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
-            v2.find(v => (v.lang || "").toLowerCase().includes("es")) ||
-            v2[0] ||
-            S.voiceES ||
-            null;
-        } catch {}
+      const pick = (voices) => {
+        return (
+          voices.find(v => (v.lang || "").toLowerCase().startsWith("es-ar")) ||
+          voices.find(v => (v.lang || "").toLowerCase().startsWith("es")) ||
+          voices.find(v => (v.lang || "").toLowerCase().includes("es")) ||
+          voices[0] ||
+          null
+        );
       };
+
+      const voces = speechSynthesis.getVoices?.() || [];
+      if (voces.length) {
+        S.voiceES = pick(voces);
+      }
+
+      if (!voicesHooked) {
+        voicesHooked = true;
+
+        speechSynthesis.onvoiceschanged = () => {
+          try {
+            const v2 = speechSynthesis.getVoices?.() || [];
+            if (v2.length) S.voiceES = pick(v2) || S.voiceES || null;
+          } catch {}
+        };
+      }
     } catch {}
   }
 
@@ -128,6 +191,10 @@
     watchdogTimer = null;
   }
 
+  // markTTSBroken(reason)
+  // - Marca TTS como “en falla” por unos segundos.
+  // - Limpia cola con cancel().
+  // - Opcional: cambia a modo lector automáticamente.
   function markTTSBroken(reason) {
     lastTtsError = String(reason || "unknown");
     ttsBrokenUntil = Date.now() + 4000;
@@ -147,12 +214,16 @@
     }
   }
 
+  // maybeUnstickTTS()
+  // - Si speechSynthesis queda “speaking” demasiado tiempo,
+  //   lo consideramos colgado.
   function maybeUnstickTTS() {
     try {
       if (!isTTSAvailable()) return;
 
       const now = Date.now();
-      const stuckTooLong = speechSynthesis.speaking && (now - lastSpeakAt > 5500);
+      const speaking = !!speechSynthesis.speaking;
+      const stuckTooLong = speaking && (now - lastSpeakAt > 5500);
 
       if (stuckTooLong) {
         KWSR.warn?.("TTS parecía colgado, cancel()");
@@ -162,9 +233,16 @@
     } catch {}
   }
 
-  // ------------------------------------------------------------
-  // Should read
-  // ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // shouldReadNow()
+  // ---------------------------------------------------------------------------
+  //
+  // Decide si “se permite leer” en este instante.
+  // Condiciones:
+  // - extensión activa
+  // - modo narrador != off
+  // - video no pausado/terminado (evita loops al pausar)
+  //
   function shouldReadNow() {
     if (!S.extensionActiva) return false;
     if (!S.modoNarradorGlobal || S.modoNarradorGlobal === "off") return false;
@@ -178,9 +256,9 @@
     return true;
   }
 
-  // ------------------------------------------------------------
-  // Fingerprints
-  // ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Fingerprints (huellas) para comparación “como si fuera lo mismo”
+  // ---------------------------------------------------------------------------
   function fpStrict(text) {
     return normalize(text)
       .replace(/\u00A0/g, " ")
@@ -201,15 +279,20 @@
       .toLowerCase();
   }
 
-  // ------------------------------------------------------------
-  // Delta logic (para Max rolling captions)
-  // ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // Delta logic (rolling captions)
+  // ---------------------------------------------------------------------------
+  //
+  // Caso típico (rolling captions):
+  // - antes:  "Hola"
+  // - ahora:  "Hola ¿todo bien?"
+  // Queremos hablar SOLO "¿todo bien?"
+  //
   function computeDelta(prevClean, currClean) {
     const prev = normalize(prevClean);
     const curr = normalize(currClean);
     if (!prev || !curr) return "";
 
-    // Normalizamos espacios para comparar “prefijos”
     const prevN = prev.replace(/\s+/g, " ").trim();
     const currN = curr.replace(/\s+/g, " ").trim();
 
@@ -218,18 +301,15 @@
     // Caso ideal: curr empieza con prev
     if (currN.toLowerCase().startsWith(prevN.toLowerCase())) {
       let tail = currN.slice(prevN.length).trim();
-
-      // Si quedó pegado por puntuación/guiones
       tail = tail.replace(/^[-–—:|•]+\s*/g, "").trim();
-
       return tail;
     }
 
-    // Caso “casi”: loose de curr contiene loose de prev (pero quizá cambió algún signo)
+    // Caso “casi”: compara loose
     const prevL = fpLoose(prevN);
     const currL = fpLoose(currN);
+
     if (prevL && currL && currL.startsWith(prevL) && currN.length > prevN.length) {
-      // Intento: buscar el prevN dentro de currN por coincidencia case-insensitive
       const idx = currN.toLowerCase().indexOf(prevN.toLowerCase());
       if (idx === 0) {
         let tail = currN.slice(prevN.length).trim();
@@ -241,9 +321,19 @@
     return "";
   }
 
-  // ------------------------------------------------------------
-  // Dedupe final + delta
-  // ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // dedupeAndDelta(raw)
+  // ---------------------------------------------------------------------------
+  //
+  // Recibe texto crudo (TRACK/VISUAL) y devuelve:
+  // - "" (vacío) si NO hay que hablarlo
+  // - texto final si SÍ hay que hablarlo
+  //
+  // Incluye:
+  // - dedupe por huellas (strict/loose)
+  // - gate por videoTime en plataformas que re-renderizan (Netflix/Max)
+  // - delta para rolling captions (hablar solo lo nuevo)
+  //
   function dedupeAndDelta(raw) {
     const clean = normalize(raw);
     if (!clean) return "";
@@ -271,6 +361,7 @@
       if (tNow != null && lastT != null) {
         const dtVideo = Math.abs(tNow - lastT);
         const gate = (platform() === "max") ? 0.45 : 0.35;
+
         if (dtVideo < gate) {
           S.lastEmitVideoTimeSec = tNow;
           return "";
@@ -278,7 +369,7 @@
       }
     }
 
-    // 1) Anti-eco inmediato
+    // 1) Anti-eco inmediato (misma frase en milisegundos)
     const baseEcho = (CFG.echoMs ?? 380);
     const echoMs = isRerenderPlatform() ? Math.max(baseEcho, 520) : baseEcho;
 
@@ -286,28 +377,29 @@
       return "";
     }
 
-    // 2) COOLDOWN normal
+    // 2) Cooldown “normal” (ventana dinámica)
     const base = (CFG.cooldownMs ?? 650);
     const extra = Math.min(1100, strictKey.length * 12);
     const windowMs = base + extra;
 
-    // 👇 Acá viene lo lindo: Max rolling captions
-    // Si el texto nuevo contiene al anterior, hablamos SOLO el delta.
-    // Esto evita exactamente tu patrón:
-    // "Hola" -> "Hola + Está todo bien?" -> "Está todo bien? + Vine..."
+    // 3) Delta (rolling captions)
+    // Si el texto nuevo “contiene” al anterior, hablamos solo lo nuevo.
     const p = platform();
-    const canDelta = (p === "max" || p === "netflix"); // si querés solo max, dejá p==="max"
+    const canDelta = (p === "max" || p === "netflix");
+
     if (canDelta && S.lastEmitText) {
       const tNow = getVideoTimeSec();
       const lastT = (typeof S.lastEmitVideoTimeSec === "number") ? S.lastEmitVideoTimeSec : null;
 
-      // Solo intentamos delta si está dentro de una ventana “de la misma escena”
-      const okWindow = (tNow != null && lastT != null) ? (Math.abs(tNow - lastT) < 1.25) : (dt < 1600);
+      // Ventana de “misma escena”
+      const okWindow = (tNow != null && lastT != null)
+        ? (Math.abs(tNow - lastT) < 1.25)
+        : (dt < 1600);
 
       if (okWindow) {
         const delta = computeDelta(S.lastEmitText, clean);
         if (delta && delta.length >= 2) {
-          // Guardamos igualmente el “texto completo actual” como base para el próximo delta
+          // Guardamos el texto completo como base para el próximo delta
           S.lastEmitStrictKey = strictKey;
           S.lastEmitLooseKey  = looseKey;
           S.lastEmitAt = now;
@@ -316,14 +408,15 @@
           const vt = getVideoTimeSec();
           if (vt != null) S.lastEmitVideoTimeSec = vt;
 
-          return delta; // ✅ habla solo lo nuevo
+          return delta;
         }
       }
     }
 
+    // 4) Si es exactamente lo mismo dentro de la ventana, no repetir
     if (strictKey === lastStrict && dt < windowMs) return "";
 
-    // Guardamos estado global
+    // Guardamos estado global de dedupe
     S.lastEmitStrictKey = strictKey;
     S.lastEmitLooseKey  = looseKey;
     S.lastEmitAt = now;
@@ -335,9 +428,14 @@
     return clean;
   }
 
-  // ------------------------------------------------------------
-  // speakTTS
-  // ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // speakTTS(text)
+  // ---------------------------------------------------------------------------
+  //
+  // Devuelve:
+  // - true  si intentó hablar (o decidió que ya estaba hablado)
+  // - false si no pudo (y conviene fallback a lector)
+  //
   function speakTTS(text) {
     if (!isTTSAvailable()) {
       markTTSBroken("speechSynthesis_not_available");
@@ -352,6 +450,7 @@
     try {
       clearWatchdog();
 
+      // Anti-eco TTS (por si el mismo texto llega dos veces muy pegado)
       const tKey = fpStrict(text);
       if (
         tKey &&
@@ -361,6 +460,7 @@
         return true;
       }
 
+      // Limpiamos cola para evitar “acumulación”
       try { speechSynthesis.cancel?.(); } catch {}
 
       const u = new SpeechSynthesisUtterance(text);
@@ -391,6 +491,7 @@
         markTTSBroken(msg);
       };
 
+      // Watchdog: si no termina ni falla, lo damos por “colgado”
       watchdogTimer = setTimeout(() => {
         if (finished) return;
         markTTSBroken("watchdog_no_end_no_error");
@@ -405,44 +506,66 @@
     }
   }
 
-  // ------------------------------------------------------------
-  // API pública
-  // ------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // API pública: leerTextoAccesible(raw)
+  // ---------------------------------------------------------------------------
+  //
+  // Entrada principal desde TRACK/VISUAL.
+  // - aplica dedupe global + delta
+  // - decide lector vs sintetizador
+  // - si falla TTS, fallback a lector
+  //
   function leerTextoAccesible(raw) {
     if (!shouldReadNow()) return;
 
     const text = dedupeAndDelta(raw);
     if (!text) return;
 
-    // No re-imprimir subtítulos en pantalla (solo si se habilita explícitamente)
+    // Mostrar en overlay solo si se habilita explícitamente
     if (CFG?.overlayShowText === true) {
       try { KWSR.overlay?.updateOverlayText?.(text); } catch {}
     }
 
+    // Modo lector: aria-live
     if (S.modoNarradorGlobal === "lector") {
       pushToLiveRegion(text);
       return;
     }
 
+    // Modo sintetizador: speechSynthesis
     const ok = speakTTS(text);
     if (!ok) pushToLiveRegion(text);
   }
 
+  // ---------------------------------------------------------------------------
+  // API pública: detenerLectura()
+  // ---------------------------------------------------------------------------
+  //
+  // Se usa cuando:
+  // - se apaga la extensión
+  // - el usuario pasa a modo "off"
+  // - reinicio fuerte del pipeline
+  //
   function detenerLectura() {
     try { clearWatchdog(); } catch {}
     try { hardResetTTS(); } catch {}
     try { if (S.liveRegion) S.liveRegion.textContent = ""; } catch {}
 
+    // Reset dedupe global
     S.lastEmitAt = 0;
     S.lastEmitText = "";
     S.lastEmitStrictKey = "";
     S.lastEmitLooseKey = "";
     S.lastEmitVideoTimeSec = null;
 
+    // Reset anti-eco TTS
     S.lastSpokenAt = 0;
     S.lastSpokenKey = "";
   }
 
+  // ---------------------------------------------------------------------------
+  // Export
+  // ---------------------------------------------------------------------------
   KWSR.voice = {
     cargarVozES,
     shouldReadNow,
@@ -450,4 +573,5 @@
     detenerLectura,
     pushToLiveRegion
   };
+
 })();
