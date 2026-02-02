@@ -1,69 +1,91 @@
-// ====================================================
+// ----------------------------------------------------
 // KathWare SubtitleReader - kwsr.utils.js
-// ====================================================
+// ----------------------------------------------------
 //
-// Este archivo tiene utilidades chiquitas que se usan en toda la extensión.
-// La idea es: “funciones simples, sin depender de plataforma”.
+// QUÉ ES ESTE ARCHIVO
+// -------------------
+// Un “cajón de herramientas” chico y sin drama.
+// Tiene utilidades simples que se usan en varios módulos.
 //
-// ¿Por qué existe?
-// Porque hay tareas que repetimos en varios módulos:
-// - Limpiar textos (subtítulos del DOM pueden venir con espacios raros o tags)
-// - Limitar números (volumen, índice de track, seek)
-// - Saber si el usuario está escribiendo (para no robarle teclas al navegador)
+// POR QUÉ EXISTE
+// --------------
+// Porque hay tareas repetidas en toda la extensión, por ejemplo:
+// - normalizar texto (espacios raros, saltos de línea, etc.)
+// - limitar números a un rango (volumen, índice de track, seek)
+// - detectar si el usuario está escribiendo (para no robar teclas)
 //
-// Nota: no es “magia del lenguaje”; TODO esto lo escribimos nosotros.
-// ====================================================
+// REGLA DE ORO
+// ------------
+// - Helpers chiquitos.
+// - Sin dependencias de plataforma.
+// - Sin efectos colaterales raros.
+// ----------------------------------------------------
 
 (() => {
   const KWSR = window.KWSR;
   if (!KWSR || KWSR.utils) return;
 
   KWSR.utils = {
-    // ------------------------------------------------------------
-    // normalize(text):
-    // Limpia un texto para lectura/comparación.
+    // ------------------------------------------------
+    // normalize(text)
+    // ------------------------------------------------
+    // Limpia texto para:
+    // - lectura en voz
+    // - comparación/dedupe
     //
     // Qué hace:
-    // - Convierte NBSP (espacio raro) a espacio normal
-    // - Elimina tags HTML si vinieran incrustados en textContent (a veces pasa)
-    // - Reduce espacios múltiples a uno
-    // - Trim (saca espacios al inicio/final)
+    // - NBSP -> espacio normal
+    // - elimina “tags” si se colaron como texto (raro, pero pasa)
+    // - colapsa espacios / tabs / saltos de línea
+    // - trim (quita espacios al inicio y al final)
     //
     // Qué NO hace:
-    // - NO traduce idiomas
-    // - NO “corrige gramática”
-    // - NO segmenta frases (eso es otra lógica)
-    // ------------------------------------------------------------
+    // - no traduce
+    // - no corrige gramática
+    // - no divide frases
+    // ------------------------------------------------
     normalize(s) {
       return String(s ?? "")
-        .replace(/\u00A0/g, " ")   // NBSP -> espacio normal
-        .replace(/<[^>]+>/g, "")  // borra tags tipo <i>...</i> si aparecen
-        .replace(/\s+/g, " ")     // colapsa espacios/tab/nuevas líneas
+        .replace(/\u00A0/g, " ")    // NBSP -> espacio normal
+        .replace(/<[^>]+>/g, "")   // si aparecen tags como texto, los saca
+        .replace(/\s+/g, " ")      // colapsa whitespace múltiple
         .trim();
     },
 
-    // ------------------------------------------------------------
-    // clamp(n, min, max):
-    // “Encierra” un número dentro de un rango.
-    // Ejemplo: clamp(2, 0, 1) => 1
+    // ------------------------------------------------
+    // clamp(n, min, max)
+    // ------------------------------------------------
+    // “Encierra” un número dentro de un rango:
+    // - clamp(2, 0, 1) => 1
+    // - clamp(-1, 0, 1) => 0
+    //
     // Se usa para:
     // - volumen (0..1)
     // - índices (0..N-1)
-    // - currentTime del video (0..duración)
-    // ------------------------------------------------------------
+    // - tiempos (0..duración)
+    //
+    // Nota:
+    // - Si n no es un número (NaN), usamos min como fallback seguro.
+    // ------------------------------------------------
     clamp(n, min, max) {
-      return Math.min(max, Math.max(min, n));
+      const nn = Number(n);
+      if (!Number.isFinite(nn)) return min;
+      return Math.min(max, Math.max(min, nn));
     },
 
-    // ------------------------------------------------------------
-    // isTyping():
-    // Devuelve true si el foco está en un campo donde el usuario escribe.
-    // Importante para hotkeys: si está escribiendo, NO interceptamos teclas.
+    // ------------------------------------------------
+    // isTyping()
+    // ------------------------------------------------
+    // Devuelve true si el foco está en algo “editable”,
+    // o sea, donde el usuario podría estar escribiendo.
+    //
+    // Importante:
+    // - Si el usuario está escribiendo, NO interceptamos hotkeys.
     //
     // Detecta:
-    // - input, textarea, select
+    // - input / textarea / select
     // - contenteditable (divs editables tipo chats)
-    // ------------------------------------------------------------
+    // ------------------------------------------------
     isTyping() {
       const ae = document.activeElement;
       if (!ae) return false;
@@ -76,14 +98,16 @@
     }
   };
 
-  /*
-  ===========================
-  Nota de mantenimiento
-  ===========================
-  - Este módulo NO depende de plataforma.
-  - Si necesitás agregar helpers nuevos, la regla es:
-      * que sean chiquitos
-      * que no toquen DOM “grande”
-      * que no tengan side effects raros
-  */
+  // ------------------------------------------------
+  // Nota de mantenimiento
+  // ------------------------------------------------
+  // Este módulo:
+  // - NO depende de plataforma
+  // - debería ser puro (sin tocar DOM “grande” ni crear timers)
+  //
+  // Si agregás helpers nuevos:
+  // - que sean chiquitos
+  // - que sean previsibles
+  // - que no sorprendan (sin side-effects)
+  // ------------------------------------------------
 })();
