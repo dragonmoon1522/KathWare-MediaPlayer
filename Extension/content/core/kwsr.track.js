@@ -1,25 +1,38 @@
-// ====================================================
+// ----------------------------------------------------
 // KathWare SubtitleReader - kwsr.track.js
-// ====================================================
+// ----------------------------------------------------
 //
-// Este módulo implementa la fuente TRACK:
-// Lee subtítulos desde las pistas del video (video.textTracks).
+// QUÉ HACE ESTE MÓDULO
+// -------------------
+// Implementa la fuente TRACK.
 //
-// Cómo funciona (en criollo):
-// - El video puede traer varias "pistas" de texto (idiomas, CC, etc).
-// - Cada pista tiene "cues" (fragmentos con startTime/endTime + texto).
-// - Si la pista está activa, podemos leer "activeCues" en tiempo real.
+// TRACK significa:
+// - Leer subtítulos desde las pistas del video (<video>.textTracks).
+// - Usar cues (fragmentos con tiempo de inicio, fin y texto).
 //
-// Estrategia:
-// 1) Elegimos el mejor track disponible (pickBestTrack).
-// 2) Nos enganchamos con oncuechange (evento del track).
-// 3) Además hacemos polling (pollTrackTick) como fallback por si el evento falla.
-// 4) Dedupe: evitamos leer lo mismo dos veces (evento + poll suelen duplicar).
+// Este módulo NO decide cuándo usar TRACK.
+// Eso lo decide el pipeline.
+// Acá solo nos encargamos de:
+// - elegir una pista válida
+// - leer sus cues
+// - evitar lecturas duplicadas
 //
-// Nota importante:
-// - En algunas plataformas hay "tracks fantasma" (existen pero no traen cues reales).
-// - Por eso trackSeemsUsable() intenta ser prudente.
-// ====================================================
+// IDEA GENERAL (en criollo)
+// ------------------------
+// 1) El video puede tener varias pistas (idiomas, CC, etc).
+// 2) Elegimos la mejor pista disponible.
+// 3) Escuchamos cambios con oncuechange.
+// 4) Usamos polling como respaldo (por si el evento falla).
+// 5) Aplicamos dedupe fuerte para no leer dos veces lo mismo.
+//
+// PROBLEMA REAL QUE RESUELVE
+// --------------------------
+// - Muchas plataformas disparan eventos duplicados.
+// - O tienen pistas “fantasma” (existen pero no traen texto).
+// - O el evento falla y solo el polling ve el cambio.
+//
+// Este archivo existe para que eso NO se note.
+// ----------------------------------------------------
 
 (() => {
   const KWSR = window.KWSR;
@@ -29,27 +42,33 @@
   const CFG = KWSR.CFG;
   const { normalize, clamp } = KWSR.utils;
 
-  // ------------------------------------------------------------
-  // normKey():
-  // Normalización fuerte para comparar strings como “lo mismo”.
-  // (Se usa para crear claves estables, no para mostrar texto.)
-  // ------------------------------------------------------------
+  // --------------------------------------------------
+  // normKey()
+  // --------------------------------------------------
+  // Normalización fuerte para comparación de texto.
+  //
+  // IMPORTANTE:
+  // - Esto NO es lo que se lee en voz.
+  // - Es solo para generar claves estables de dedupe.
+  // --------------------------------------------------
   function normKey(s) {
     return String(s ?? "")
-      .replace(/\u00A0/g, " ")              // NBSP -> espacio normal
-      .replace(/[\u200B-\u200D\uFEFF]/g, "") // zero-width chars
+      .replace(/\u00A0/g, " ")               // NBSP -> espacio normal
+      .replace(/[\u200B-\u200D\uFEFF]/g, "") // caracteres invisibles
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
   }
 
-  // ------------------------------------------------------------
-  // readActiveCues():
-  // Lee el texto de los cues activos ahora mismo.
+  // --------------------------------------------------
+  // readActiveCues()
+  // --------------------------------------------------
+  // Lee el texto de los cues activos AHORA.
   //
-  // Si hay varios cues activos (dos líneas), los unimos con " / ".
-  // Eso ayuda a no mezclar con coma (que puede ser parte del texto).
-  // ------------------------------------------------------------
+  // Si hay más de un cue activo (dos líneas):
+  // - los unimos con " / "
+  // - evitamos usar coma (puede ser parte del diálogo)
+  // --------------------------------------------------
   function readActiveCues(track) {
     try {
       const active = track?.activeCues ? Array.from(track.activeCues) : [];
@@ -60,16 +79,20 @@
     }
   }
 
-  // ------------------------------------------------------------
-  // activeCuesKey():
-  // Dedupe principal: clave estable del/los cue(s) activos.
+  // --------------------------------------------------
+  // activeCuesKey()
+  // --------------------------------------------------
+  // Clave estable para dedupe de TRACK.
   //
   // Incluye:
-  // - startTime y endTime (con 3 decimales) para estabilidad
+  // - startTime y endTime (redondeados)
   // - texto normalizado fuerte
   //
-  // Esto evita que “pequeños cambios” (espacios, join) disparen re-lecturas.
-  // ------------------------------------------------------------
+  // Así evitamos re-lecturas por:
+  // - espacios
+  // - reordenamientos
+  // - eventos duplicados
+  // --------------------------------------------------
   function activeCuesKey(track) {
     try {
       const active = track?.activeCues ? Array.from(track.activeCues) : [];
@@ -82,7 +105,7 @@
         return `${st}-${et}:${tx}`;
       });
 
-      // Orden estable (por si el array viene en distinto orden)
+      // Orden estable por seguridad
       parts.sort();
       return parts.join("||");
     } catch {
@@ -90,102 +113,95 @@
     }
   }
 
-  // ------------------------------------------------------------
-  // hasCues():
-  // Algunas pistas tienen .cues cargados aunque no haya activeCues aún.
-  // ------------------------------------------------------------
+  // --------------------------------------------------
+  // hasCues()
+  // --------------------------------------------------
+  // Algunas pistas ya tienen cues cargados
+  // aunque todavía no haya activeCues.
+  // --------------------------------------------------
   function hasCues(track) {
     try {
-      const len = track?.cues ? track.cues.length : 0;
-      return len > 0;
+      return (track?.cues?.length || 0) > 0;
     } catch {
       return false;
     }
   }
 
-  // ------------------------------------------------------------
-  // trackSeemsUsable():
-  // Decide si una pista “parece real” y usable.
+  // --------------------------------------------------
+  // trackSeemsUsable()
+  // --------------------------------------------------
+  // Decide si una pista parece “real” y usable.
   //
   // Heurística:
-  // 1) Si ya hay activeCues con texto -> sí
-  // 2) Si hay cues cargados -> probablemente sí (pero menor prioridad)
+  // 1) Si hay texto activo ahora -> sí
+  // 2) Si hay cues cargados -> probablemente sí
+  // 3) Si no hay nada -> probablemente pista fantasma
   //
-  // También intentamos poner el track en "hidden" si estaba disabled,
-  // porque en algunos sitios disabled => no te da activeCues.
-  // ------------------------------------------------------------
+  // Además:
+  // - intentamos poner el track en "hidden"
+  //   porque algunos sitios con "disabled" no exponen cues.
+  // --------------------------------------------------
   function trackSeemsUsable(track) {
     if (!track) return false;
 
-    // Intento de habilitación “silenciosa”
     try {
       if (track.mode === "disabled") track.mode = "hidden";
     } catch {}
 
-    // Caso ideal: hay texto activo ahora
-    const now = readActiveCues(track);
-    if (now) return true;
-
-    // Caso probable: la pista tiene cues cargados
+    if (readActiveCues(track)) return true;
     if (hasCues(track)) return true;
 
-    // Si no tiene nada, puede ser fantasma
     return false;
   }
 
-  // ------------------------------------------------------------
-  // videoHasUsableTracks():
-  // Se usa en AUTO para decidir si conviene TRACK.
-  // ------------------------------------------------------------
+  // --------------------------------------------------
+  // videoHasUsableTracks()
+  // --------------------------------------------------
+  // Usado por el pipeline en modo AUTO.
+  // Sirve para decidir si conviene TRACK o VISUAL.
+  // --------------------------------------------------
   function videoHasUsableTracks(video) {
     const list = Array.from(video?.textTracks || []);
-    if (!list.length) return false;
     return list.some(trackSeemsUsable);
   }
 
-  // ------------------------------------------------------------
-  // scoreTrack():
-  // Puntaje para elegir "mejor pista".
-  // Más score = más probable que sea la correcta.
-  // ------------------------------------------------------------
+  // --------------------------------------------------
+  // scoreTrack()
+  // --------------------------------------------------
+  // Puntaje heurístico para elegir la mejor pista.
+  // Más puntaje = más probable que sea la correcta.
+  // --------------------------------------------------
   function scoreTrack(t) {
     let s = 0;
 
-    // Mode: showing > hidden > disabled
     const mode = (t?.mode || "").toLowerCase();
     if (mode === "showing") s += 50;
     else if (mode === "hidden") s += 30;
 
-    // Si tiene cues, suma
     if (hasCues(t)) s += 20;
 
-    // Meta (label/language) suma un poquito
-    const hasMeta = !!(t?.label || t?.language);
-    if (hasMeta) s += 5;
+    if (t?.label || t?.language) s += 5;
 
-    // Si hay activeCues con texto ahora, eso manda
-    const activeNow = readActiveCues(t);
-    if (activeNow) s += 100;
+    if (readActiveCues(t)) s += 100;
 
     return s;
   }
 
-  // ------------------------------------------------------------
-  // pickBestTrack():
-  // Elige pista en este orden:
-  // 1) trackIndexGlobal (si existe y es usable)
-  // 2) si no, el mejor score entre pistas usables
-  // ------------------------------------------------------------
+  // --------------------------------------------------
+  // pickBestTrack()
+  // --------------------------------------------------
+  // Orden de prioridad:
+  // 1) trackIndexGlobal (si es válido y usable)
+  // 2) pista usable con mayor score
+  // --------------------------------------------------
   function pickBestTrack(video) {
     const list = Array.from(video?.textTracks || []);
     if (!list.length) return null;
 
-    // Si el usuario eligió índice, lo respetamos si sirve
     const idx = clamp(S.trackIndexGlobal, 0, list.length - 1);
     const byIdx = list[idx];
     if (byIdx && trackSeemsUsable(byIdx)) return byIdx;
 
-    // Si no, buscamos la mejor pista usable
     const usable = list.filter(trackSeemsUsable);
     if (!usable.length) return null;
 
@@ -193,20 +209,19 @@
     return usable[0] || null;
   }
 
-  // ------------------------------------------------------------
-  // shouldEmitTrackKey():
-  // Dedupe principal para TRACK.
+  // --------------------------------------------------
+  // shouldEmitTrackKey()
+  // --------------------------------------------------
+  // Dedupe principal de TRACK.
   //
   // Problema típico:
   // - oncuechange dispara
   // - poll también ve el mismo cue
-  // => se lee 2 veces.
   //
   // Solución:
-  // - guardamos lastTrackKey + lastTrackAt
-  // - bloqueamos duplicados inmediatos dentro de una ventana corta (echoMs)
-  // - y bloqueamos repetir exactamente la misma key en general
-  // ------------------------------------------------------------
+  // - bloqueamos repeticiones inmediatas
+  // - y bloqueamos repetir la misma key exacta
+  // --------------------------------------------------
   function shouldEmitTrackKey(key) {
     if (!key) return false;
 
@@ -214,53 +229,41 @@
     const dt = now - (S.lastTrackAt || 0);
     const echoMs = (CFG.trackEchoMs ?? 350);
 
-    // Anti-eco inmediato (evento+poll, o doble evento)
-    if (key === (S.lastTrackKey || "") && dt < echoMs) return false;
-
-    // Si la key es idéntica a la anterior, no repetimos
-    if (key === (S.lastTrackKey || "")) return false;
+    if (key === S.lastTrackKey && dt < echoMs) return false;
+    if (key === S.lastTrackKey) return false;
 
     S.lastTrackKey = key;
     S.lastTrackAt = now;
     return true;
   }
 
-  // ------------------------------------------------------------
-  // attachTrack():
-  // Engancha el evento oncuechange al track seleccionado.
-  // También intenta una lectura inicial si ya hay un cue activo.
-  // ------------------------------------------------------------
+  // --------------------------------------------------
+  // attachTrack()
+  // --------------------------------------------------
+  // Engancha oncuechange al track elegido.
+  // También intenta una lectura inicial si ya hay texto activo.
+  // --------------------------------------------------
   function attachTrack(track) {
     if (!track) return;
 
-    // Intento: habilitar
     try { if (track.mode === "disabled") track.mode = "hidden"; } catch {}
-
-    // Limpieza de handler viejo
     try { track.oncuechange = null; } catch {}
 
-    // Evento de cambio de cues
     track.oncuechange = () => {
-      // Gate general (si está OFF no leemos)
       if (!KWSR.voice?.shouldReadNow?.()) return;
       if (S.effectiveFuente !== "track") return;
 
       const key = activeCuesKey(track);
-      if (!key) return;
-
       if (!shouldEmitTrackKey(key)) return;
 
       const txt = readActiveCues(track);
-      if (!txt) return;
+      if (!txt || txt === S.lastTrackSeen) return;
 
-      // Fallback por texto (por si la plataforma tiene cues raros)
-      if (txt === S.lastTrackSeen) return;
       S.lastTrackSeen = txt;
-
       KWSR.voice?.leerTextoAccesible?.(txt);
     };
 
-    // Lectura inicial (si ya hay cue activo)
+    // Lectura inicial (si hay cue activo al enganchar)
     const initKey = activeCuesKey(track);
     if (initKey && shouldEmitTrackKey(initKey)) {
       const initial = readActiveCues(track);
@@ -271,35 +274,26 @@
     }
   }
 
-  // ------------------------------------------------------------
-  // startTrack():
+  // --------------------------------------------------
+  // startTrack()
+  // --------------------------------------------------
   // Activa TRACK como fuente efectiva.
-  // - elige mejor pista
-  // - engancha eventos
-  // - actualiza overlay
-  // ------------------------------------------------------------
+  // --------------------------------------------------
   function startTrack() {
     const v = S.currentVideo;
-    if (!v?.textTracks || !v.textTracks.length) {
+    if (!v?.textTracks?.length) {
       S.currentTrack = null;
       KWSR.overlay?.updateOverlayStatus?.();
       return false;
     }
 
     const best = pickBestTrack(v);
-    if (!best) {
+    if (!best || !trackSeemsUsable(best)) {
       S.currentTrack = null;
       KWSR.overlay?.updateOverlayStatus?.();
       return false;
     }
 
-    if (!trackSeemsUsable(best)) {
-      S.currentTrack = null;
-      KWSR.overlay?.updateOverlayStatus?.();
-      return false;
-    }
-
-    // Si cambió la pista, re-attach
     if (best !== S.currentTrack) {
       S.currentTrack = best;
       attachTrack(best);
@@ -307,7 +301,7 @@
       KWSR.overlay?.updateOverlayTracksList?.();
       KWSR.overlay?.updateOverlayStatus?.();
 
-      KWSR.log?.("TRACK activo:", KWSR.overlay?.describeTrack?.(best) || {
+      KWSR.log?.("TRACK activo:", {
         label: best.label,
         lang: best.language,
         mode: best.mode,
@@ -318,34 +312,30 @@
     return true;
   }
 
-  // ------------------------------------------------------------
-  // pollTrackTick():
-  // Fallback por timer. Sirve cuando:
-  // - la plataforma no dispara oncuechange confiable
-  // - o hay frames donde se pierde el evento
-  //
-  // Nota: dedupe por key evita duplicar con oncuechange.
-  // ------------------------------------------------------------
+  // --------------------------------------------------
+  // pollTrackTick()
+  // --------------------------------------------------
+  // Fallback por timer.
+  // Sirve cuando oncuechange no es confiable.
+  // --------------------------------------------------
   function pollTrackTick() {
     if (!KWSR.voice?.shouldReadNow?.()) return;
     if (S.effectiveFuente !== "track") return;
     if (!S.currentTrack) return;
 
     const key = activeCuesKey(S.currentTrack);
-    if (!key) return;
-
     if (!shouldEmitTrackKey(key)) return;
 
     const txt = readActiveCues(S.currentTrack);
-    if (!txt) return;
+    if (!txt || txt === S.lastTrackSeen) return;
 
-    if (txt === S.lastTrackSeen) return;
     S.lastTrackSeen = txt;
-
     KWSR.voice?.leerTextoAccesible?.(txt);
   }
 
-  // Export del módulo
+  // --------------------------------------------------
+  // EXPORT
+  // --------------------------------------------------
   KWSR.track = {
     readActiveCues,
     trackSeemsUsable,
