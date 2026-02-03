@@ -1,6 +1,6 @@
-// ====================================================
+// -----------------------------------------------------------------------------
 // KathWare SubtitleReader - background.js (Manifest V3)
-// ====================================================
+// -----------------------------------------------------------------------------
 //
 // ¿Qué hace este archivo?
 // - Vive en el "service worker" de la extensión (no en la página).
@@ -17,15 +17,14 @@
 // - Si devolvés true y nunca llamás a sendResponse, Chrome se queja con:
 //   “A listener indicated an asynchronous response by returning true,
 //    but the message channel closed before a response was received”
-//
-// ====================================================
+// -----------------------------------------------------------------------------
 
-const LOG_KEY = "kathLogs";     // Clave donde guardamos los logs en storage.local
-const MAX_LOGS = 400;          // Límite para no crecer infinito (rendimiento + privacidad)
+const LOG_KEY = "kathLogs"; // Clave donde guardamos los logs en storage.local
+const MAX_LOGS = 400;      // Límite para no crecer infinito (rendimiento + privacidad)
 
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 // pushLog(entry, cb)
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 // Guarda un evento de log en chrome.storage.local[LOG_KEY].
 //
 // - entry: objeto con los datos del log (timestamp, nivel, mensaje, etc.)
@@ -34,7 +33,7 @@ const MAX_LOGS = 400;          // Límite para no crecer infinito (rendimiento +
 // Por qué así:
 // - storage.local es persistente (sobrevive reinicios).
 // - recortamos a MAX_LOGS para no inflar storage.
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 function pushLog(entry, cb) {
   try {
     chrome.storage.local.get([LOG_KEY], (data) => {
@@ -51,28 +50,28 @@ function pushLog(entry, cb) {
         // runtime.lastError puede existir si el SW se interrumpe o hay problemas de storage.
         // No rompemos flujo: esto es logging, no lógica crítica.
         void chrome.runtime.lastError;
-        cb && cb();
+        try { cb && cb(); } catch {}
       });
     });
   } catch (e) {
     console.warn("[KathWare] pushLog error:", e);
-    cb && cb();
+    try { cb && cb(); } catch {}
   }
 }
 
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 // onInstalled
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 // Se ejecuta cuando se instala o actualiza la extensión.
 // Lo usamos para log de instalación (diagnóstico básico).
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[KathWare] SubtitleReader instalado/actualizado.");
 });
 
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 // commands.onCommand
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 // Recibe comandos globales definidos en manifest.json.
 // En nuestro caso: toggle_kathware_subtitlereader
 //
@@ -83,25 +82,27 @@ chrome.runtime.onInstalled.addListener(() => {
 // Nota:
 // - Esto NO ejecuta lógica de lectura de subtítulos.
 // - Solo "toca el timbre" al content script de esa pestaña.
-// ----------------------------------------------------
-chrome.commands.onCommand.addListener((command) => {
-  if (command !== "toggle_kathware_subtitlereader") return;
+// -----------------------------------------------------------------------------
+if (chrome.commands?.onCommand) {
+  chrome.commands.onCommand.addListener((command) => {
+    if (command !== "toggle_kathware_subtitlereader") return;
 
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    const tabId = tabs?.[0]?.id;
-    if (!tabId) return;
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const tabId = tabs?.[0]?.id;
+      if (!tabId) return;
 
-    chrome.tabs.sendMessage(tabId, { action: "toggleExtension" }, () => {
-      // Si la pestaña no tiene content script (o no es una URL válida), Chrome tira error.
-      // Lo ignoramos para no ensuciar la consola del usuario.
-      void chrome.runtime.lastError;
+      chrome.tabs.sendMessage(tabId, { action: "toggleExtension" }, () => {
+        // Si la pestaña no tiene content script (o no es una URL válida), Chrome tira error.
+        // Lo ignoramos para no ensuciar la consola del usuario.
+        void chrome.runtime.lastError;
+      });
     });
   });
-});
+}
 
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 // runtime.onMessage
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 // Recibe mensajes desde:
 // - content scripts (cuando quieren guardar logs)
 // - (posiblemente) popup u otros componentes
@@ -111,8 +112,30 @@ chrome.commands.onCommand.addListener((command) => {
 //
 // Regla de oro:
 // - Solo return true si respondemos luego (async).
-// ----------------------------------------------------
+// -----------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  let responded = false;
+
+  const safeRespond = (payload) => {
+    if (responded) return;
+    responded = true;
+    try { sendResponse?.(payload); } catch {}
+  };
+
+  // Safety timeout:
+  // MV3 puede dormir el SW / cortar ciclos. Preferimos responder “ok”
+  // antes que dejar el canal colgado y generar warnings.
+  let safetyTimer = null;
+  const armSafety = () => {
+    try {
+      safetyTimer = setTimeout(() => safeRespond({ status: "ok", note: "safety-timeout" }), 1500);
+    } catch {}
+  };
+  const clearSafety = () => {
+    try { if (safetyTimer) clearTimeout(safetyTimer); } catch {}
+    safetyTimer = null;
+  };
+
   try {
     // 1) Guardar logs enviados por content scripts
     if (request?.action === "logEvent") {
@@ -125,25 +148,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       };
 
       // Respondemos ASYNC cuando storage terminó.
+      armSafety();
+
       pushLog(entry, () => {
-        try {
-          sendResponse({ status: "ok" });
-        } catch {
-          // Si el canal ya se cerró, no hacemos nada.
-        }
+        clearSafety();
+        safeRespond({ status: "ok" });
       });
 
       return true; // ✅ canal abierto: respuesta async
     }
 
     // 2) Mensajes no reconocidos: respondemos sync sin romper
-    sendResponse({ status: "ok" });
+    safeRespond({ status: "ok" });
     return false;
+
   } catch (e) {
     console.warn("[KathWare] background error:", e);
-    try {
-      sendResponse({ status: "error", error: String(e?.message || e) });
-    } catch {}
+    clearSafety();
+    safeRespond({ status: "error", error: String(e?.message || e) });
     return false;
   }
 });
