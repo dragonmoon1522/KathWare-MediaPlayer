@@ -10,7 +10,7 @@
 <body>
   <header>
     <h1>KathWare SubtitleReader</h1>
-    <p>Lectura accesible de subtítulos en tiempo real.</p>
+    <p class="help">Lectura accesible de subtítulos en tiempo real.</p>
   </header>
 
   <main>
@@ -19,7 +19,7 @@
     <section class="info">
       <p>
         Activá la extensión en la pestaña actual para comenzar a leer subtítulos
-        automáticamente con tu lector de pantalla o con voz del sistema.
+        automáticamente con tu lector de pantalla o con la voz del sistema.
       </p>
     </section>
 
@@ -27,9 +27,18 @@
     <section>
       <h2>Atajos de teclado</h2>
       <ul>
-        <li><strong>Alt + Shift + K</strong> — Activar / desactivar la extensión</li>
-        <li><strong>Alt + Shift + L</strong> — Cambiar modo de lectura</li>
-        <li><strong>Alt + Shift + O</strong> — Abrir / cerrar el panel accesible</li>
+        <li>
+          <strong><kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>K</kbd></strong>
+          — Activar / desactivar la extensión
+        </li>
+        <li>
+          <strong><kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>L</kbd></strong>
+          — Cambiar modo de lectura
+        </li>
+        <li>
+          <strong><kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd></strong>
+          — Abrir / cerrar el panel accesible
+        </li>
       </ul>
     </section>
 
@@ -50,18 +59,20 @@
     <section>
       <label for="reporteError">Reportar un problema:</label>
       <textarea
-  id="reporteError"
-  aria-label="Descripción del problema"
-  rows="4"
-  placeholder="Describí qué ocurrió y en qué plataforma…">
-</textarea>
-    <button id="enviarReporte">Enviar reporte</button>
+        id="reporteError"
+        aria-label="Descripción del problema"
+        rows="4"
+        placeholder="Describí qué ocurrió y en qué plataforma…">
+      </textarea>
+      <button id="enviarReporte" type="button">
+        Enviar reporte
+      </button>
     </section>
 
     <section>
       <label for="permitirEnvioLogs">
         <input type="checkbox" id="permitirEnvioLogs" />
-        Adjuntar información técnica (opcional)
+        Adjuntar información técnica (logs recientes, sin datos personales)
       </label>
     </section>
 
