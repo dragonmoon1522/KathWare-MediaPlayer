@@ -1,6 +1,6 @@
 ## **KathWare SubtitleReader**
 
-**Autora:** Katherine Vargas | [(KathWare)](https://kathware.com.ar)
+**Autora:** Katherine Vargas | [(KathWare)](https://kathware.com.ar)  
 **Última actualización:** 2026-01-26
 
 ---
@@ -30,7 +30,6 @@ Incluye:
 * Lectura accesible mediante *live regions* (no se fuerza idioma).
 * Almacenamiento local del navegador (`storage.local`).
 * Detección dinámica de:
-
   * elementos `<video>`,
   * pistas de subtítulos (`textTracks`),
   * subtítulos renderizados visualmente en el DOM.
@@ -51,32 +50,53 @@ Incluye:
 * **Activación por atajo universal:** `Alt + Shift + K`.
 * **Panel accesible opcional**, disponible solo cuando la extensión está activa.
 * Lectura automática de subtítulos:
-
   * mediante lector de pantalla (modo *lector*), o
   * mediante sintetizador de voz del sistema (modo *voz*).
 * Cambio rápido de modo de lectura desde teclado:
-
   * `Alt + Shift + L` (lector → voz → desactivado).
 * Apertura y cierre del panel:
-
   * `Alt + Shift + O`.
 * Detección automática de la mejor fuente de subtítulos disponible:
-
   * pistas accesibles (`track`) cuando existen,
   * subtítulos visibles (`visual`) cuando no hay pistas reales.
 * Adaptaciones automáticas para plataformas con controles poco accesibles:
-
   * etiquetado dinámico de botones,
   * menús de audio y subtítulos accesibles.
 * Lectura sincronizada con el video, **sin repeticiones ni eco**.
 * Controles del reproductor accesibles por teclado:
-
   * reproducir / pausar,
   * avanzar / retroceder,
   * volumen,
   * pantalla completa (con aviso de posibles limitaciones de accesibilidad).
 
 > ⚠️ La extensión **no reimprime subtítulos en pantalla**: utiliza únicamente el contenido ya visible o disponible en la plataforma para la lectura, evitando duplicación o confusión visual.
+
+---
+
+### Arquitectura y decisiones de diseño (núcleo)
+
+El núcleo de **KathWare SubtitleReader** está diseñado de forma **modular, defensiva y comprensible**, priorizando la mantenibilidad y la accesibilidad por sobre soluciones frágiles o dependientes de una sola plataforma.
+
+Principios clave del core:
+
+* **Arranque seguro (bootstrap):**
+  * El archivo `kwsr.bootstrap.js` inicializa un único namespace global (`window.KWSR`).
+  * Incluye una guarda estricta para evitar dobles cargas del content script.
+* **Separación clara de responsabilidades:**
+  * `core/` → detección de video, pistas, subtítulos y pipeline.
+  * `ui/` → overlay accesible y notificaciones (toast).
+  * `adapters/` → correcciones específicas para plataformas poco accesibles.
+* **Selección automática del motor de lectura:**
+  * El usuario **no elige** entre *track* o *visual*.
+  * El pipeline decide dinámicamente la fuente más confiable disponible.
+* **Prevención activa de errores comunes:**
+  * deduplicación avanzada para evitar eco o repeticiones,
+  * control de re-render en plataformas como Netflix y Max,
+  * watchdog para detectar bloqueos del sintetizador de voz.
+* **Accesibilidad como regla, no como parche:**
+  * una sola *live region* global,
+  * sin forzar idioma ni voz,
+  * sin interferir con escritura o navegación del usuario.
 
 ---
 
@@ -117,3 +137,12 @@ Este proyecto está licenciado bajo:
 ### Historial de versiones
 
 🔗 [Consultar `version.md`](./version.md)
+
+---
+
+### Estado actual del proyecto
+
+Este proyecto se encuentra en **desarrollo activo**.  
+Las plataformas soportadas pueden variar según cambios en los reproductores externos.
+
+Las pruebas se realizan priorizando **accesibilidad real con lector de pantalla**, no solo compatibilidad técnica.
