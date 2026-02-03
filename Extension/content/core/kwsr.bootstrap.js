@@ -3,44 +3,29 @@
 // ----------------------------------------------------
 //
 // ARCHIVO: bootstrap (arranque)
-// -----------------------------
-// Este es el PRIMER archivo que se ejecuta del content-script.
-// Su función NO es “hacer cosas”, sino preparar el terreno.
+// - Es el PRIMER archivo del content-script.
+// - Prepara el terreno: namespace + cfg/state + logs + storage loader.
 //
-// Qué SÍ hace:
-// 1) Crea el objeto global window.KWSR (namespace único).
-// 2) Detecta la API del navegador (chrome / browser).
-// 3) Define sistema de logs (local + remoto opcional).
-// 4) Define loader de configuración desde storage.
-//
-// Qué NO debe hacer (importante):
-// - NO crea UI (overlay, panel, botones).
-// - NO inicia timers ni observers.
-// - NO lee subtítulos.
-// Todo eso vive en pipeline / overlay / engine.
+// NO debe hacer:
+// - NO UI
+// - NO timers/observers
+// - NO lectura de subtítulos
 //
 // Regla de oro:
-// - Este archivo DEBE ser seguro de ejecutar una sola vez.
-// - Si se ejecuta dos veces, aparecen bugs graves (doble lectura, timers duplicados).
+// - Seguro para ejecutar 1 sola vez.
+// - Si se ejecuta 2 veces: bugs graves (duplicados, timers dobles).
 // ----------------------------------------------------
 
 (() => {
   // --------------------------------------------------
-  // GUARDA ANTI-DOBLE-CARGA
-  // --------------------------------------------------
-  // Si window.KWSR ya existe, salimos inmediatamente.
-  // Esta guarda es CRÍTICA. No tocar sin saber lo que se hace.
+  // Guarda anti-doble-carga
   // --------------------------------------------------
   if (window.KWSR) return;
 
   // --------------------------------------------------
-  // DETECCIÓN DE API DE EXTENSIÓN
-  // --------------------------------------------------
-  // Chromium: expone `chrome`
-  // Firefox: expone `browser` (a veces también `chrome`)
-  //
-  // Si no hay ninguna, la extensión puede funcionar
-  // parcialmente (sin storage, sin mensajes).
+  // Detección de API de extensión
+  // - Chromium: chrome
+  // - Firefox: browser (a veces también chrome)
   // --------------------------------------------------
   const api =
     (typeof chrome !== "undefined" && chrome?.runtime) ? chrome :
@@ -48,58 +33,58 @@
     null;
 
   // --------------------------------------------------
-  // OBJETO CENTRAL KWSR (namespace)
-  // --------------------------------------------------
-  // Acá cuelga TODO el sistema.
-  // Evitamos variables sueltas en window.
+  // Objeto central KWSR (namespace)
   // --------------------------------------------------
   const KWSR = {
     version: "2.0.0",
     api,
 
     // ------------------------------------------------
-    // CFG: configuración técnica (parámetros)
-    // ------------------------------------------------
+    // CFG: configuración técnica (defaults)
     // - No es estado vivo.
-    // - Son valores por defecto.
-    // - Pueden ser pisados por storage o debug.
+    // - Se puede pisar desde storage o debug.
     // ------------------------------------------------
     CFG: {
-      // Debug visual / consola:
-      // OFF por defecto (usuario final).
+      // Debug
       debug: false,
+      debugVisual: false,
 
-      // Logs remotos:
-      // OFF por defecto por privacidad y performance.
+      // Logs remotos (opt-in)
       allowRemoteLogs: false,
 
-      // Hotkeys personalizados (se completan luego)
+      // Hotkeys (si se usa, viene de storage)
       hotkeys: null,
 
-      // Timings del motor
-      rehookMs: 1200,
-      pollMsTrack: 220,
-      pollMsVisual: 220,
-      visualReselectMs: 1300,
-      adaptersMs: 650,
+      // Timings (coherentes con pipeline actual)
+      rehookMs: 900,
+      pollMsTrack: 450,
+      pollMsVisual: 650,
+      visualReselectMs: 2600,
+      adaptersMs: 1200,
 
       // Controles del reproductor
       seekSmall: 5,
       seekBig: 10,
       volStep: 0.05,
 
-      // Anti-eco / deduplicación
-      burstMs: 300,
-      cooldownMs: 800,
+      // Dedupe / anti-eco (global)
+      echoMs: 380,
+      cooldownMs: 650,
+
+      // TRACK
+      trackEchoMs: 350,
+
+      // TTS watchdog
+      ttsEchoMs: 350,
+      ttsWatchdogMs: 4500,
 
       // UI
-      autoOpenPanelOnSubs: false
+      autoOpenPanelOnSubs: false,
+      overlayShowText: false
     },
 
     // ------------------------------------------------
     // state: estado vivo del sistema
-    // ------------------------------------------------
-    // TODO lo que cambia durante la ejecución vive acá.
     // ------------------------------------------------
     state: {
       // Overlay / UI
@@ -108,22 +93,20 @@
       overlayPill: null,
       overlayStatus: null,
       overlayText: null,
-      overlayTrackSelect: null,
       overlayModoSelect: null,
-      overlayFuenteSelect: null,
 
       // Toast
       toastEl: null,
       toastTimer: null,
       toastLiveRegion: null,
 
-      // Settings de usuario
+      // Settings usuario
       extensionActiva: false,
       modoNarradorGlobal: "lector", // lector | sintetizador | off
       fuenteSubGlobal: "auto",      // auto | track | visual
       trackIndexGlobal: 0,
 
-      // Fuente efectiva real
+      // Fuente efectiva real (decidida por pipeline)
       effectiveFuente: "visual",
 
       // Motor de lectura
@@ -132,6 +115,7 @@
 
       // Video / track actual
       currentVideo: null,
+      currentVideoKey: "",
       currentTrack: null,
 
       // Timers / observers
@@ -148,40 +132,50 @@
       visualNode: null,
       visualSelectors: null,
       visualSelectorUsed: null,
+      visualDirty: false,
+      visualDirtyAt: 0,
+      _visualScheduled: false,
 
-      // Dedupe global
+      // Dedupe global (voice)
       lastEmitText: "",
       lastEmitAt: 0,
       lastEmitStrictKey: "",
       lastEmitLooseKey: "",
+      lastEmitVideoTimeSec: null,
 
-      // TRACK / VISUAL dedupe
+      // TRACK dedupe (track.js)
       lastTrackSeen: "",
-      lastVisualSeen: "",
       lastTrackKey: "",
       lastTrackAt: 0,
+
+      // VISUAL dedupe (visual.js)
+      lastVisualSeen: "",
+      _visualLastAt: 0,
+      _visualLastText: "",
+      _visualLastKey: "",
+      _visualLastStrict: "",
+      _visualLastLoose: "",
+      _visualLastVideoTimeSec: null,
 
       // Rehook
       lastSig: "",
 
-      // Plataformas no accesibles
+      // Plataformas no accesibles (adapter)
       lastNonAccControlsSig: "",
       lastNonAccLabeledCount: 0,
       nonAccMenuObserver: null,
-      nonAccMenusProcessed: new WeakSet()
+      nonAccMenusProcessed: null // lazy init en el adapter
     }
   };
 
-  // Exponemos KWSR globalmente
+  // Exponer KWSR globalmente
   window.KWSR = KWSR;
 
   // --------------------------------------------------
-  // SISTEMA DE LOGS
+  // Sistema de logs
+  // - console solo si debug
+  // - remoto solo si allowRemoteLogs (opt-in)
   // --------------------------------------------------
-  // - KWSR.log / warn / error
-  // - Logs remotos solo si allowRemoteLogs = true
-  // --------------------------------------------------
-
   const safeStringify = (x) => {
     try {
       if (typeof x === "string") return x;
@@ -227,19 +221,24 @@
   };
 
   // --------------------------------------------------
-  // STORAGE LOADER
-  // --------------------------------------------------
-  // Lee configuración persistida y la aplica sobre CFG/state.
+  // Storage loader
+  // - Lee configuración persistida y aplica sobre CFG/state.
   // --------------------------------------------------
   KWSR.storage = {
     cargarConfigDesdeStorage(cb) {
-      if (!KWSR.api?.storage?.local) return cb && cb();
+      if (!KWSR.api?.storage?.local) {
+        cb && cb();
+        return;
+      }
 
       KWSR.api.storage.local.get(
-        ["modoNarrador", "fuenteSub", "trackIndex", "debug", "hotkeys"],
+        ["modoNarrador", "fuenteSub", "trackIndex", "debug", "debugVisual", "hotkeys", "allowRemoteLogs"],
         (data) => {
           try {
             if (typeof data?.debug === "boolean") KWSR.CFG.debug = data.debug;
+            if (typeof data?.debugVisual === "boolean") KWSR.CFG.debugVisual = data.debugVisual;
+            if (typeof data?.allowRemoteLogs === "boolean") KWSR.CFG.allowRemoteLogs = data.allowRemoteLogs;
+
             if (data?.modoNarrador) KWSR.state.modoNarradorGlobal = data.modoNarrador;
             if (data?.fuenteSub) KWSR.state.fuenteSubGlobal = data.fuenteSub;
 
