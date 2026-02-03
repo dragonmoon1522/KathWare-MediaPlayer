@@ -1,4 +1,4 @@
-// ====================================================
+// -----------------------------------------------------------------------------
 // KathWare SubtitleReader - popup.js
 // Popup informativo + configuración básica
 //
@@ -7,7 +7,7 @@
 // - pista activa
 //
 // Todo eso se detecta automáticamente en el content script.
-// ====================================================
+// -----------------------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", () => {
   const api =
@@ -29,45 +29,69 @@ document.addEventListener("DOMContentLoaded", () => {
   const GITHUB_OWNER = "dragonmoon1522";
   const GITHUB_REPO = "KathWare-SubtitleReader";
 
-  // ---------------- Helpers ----------------
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
 
   function withActiveTab(cb) {
-    api.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const tab = tabs?.[0];
-      cb(tab || null);
-    });
+    try {
+      api.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tab = tabs?.[0];
+        cb(tab || null);
+      });
+    } catch {
+      cb(null);
+    }
   }
 
   function notifyContentScript() {
     withActiveTab((tab) => {
       if (!tab?.id) return;
 
-      api.tabs.sendMessage(
-        tab.id,
-        { action: "updateSettings" },
-        () => void api.runtime.lastError // silenciar si no hay content script
-      );
+      try {
+        api.tabs.sendMessage(
+          tab.id,
+          { action: "updateSettings" },
+          () => void api.runtime.lastError // silenciar si no hay content script
+        );
+      } catch {
+        // Silencioso
+      }
     });
   }
 
-  // ---------------- Cargar configuración ----------------
+  // ---------------------------------------------------------------------------
+  // Cargar configuración
+  // ---------------------------------------------------------------------------
 
-  api.storage.local.get(["modoNarrador"], (data) => {
-    if (data?.modoNarrador && modoNarrador) {
-      modoNarrador.value = data.modoNarrador;
+  try {
+    api.storage.local.get(["modoNarrador"], (data) => {
+      if (data?.modoNarrador && modoNarrador) {
+        modoNarrador.value = data.modoNarrador;
+      }
+    });
+  } catch {
+    // Silencioso
+  }
+
+  // ---------------------------------------------------------------------------
+  // Guardar modo de lectura
+  // ---------------------------------------------------------------------------
+
+  modoNarrador?.addEventListener("change", () => {
+    try {
+      api.storage.local.set(
+        { modoNarrador: modoNarrador.value },
+        notifyContentScript
+      );
+    } catch {
+      // Silencioso
     }
   });
 
-  // ---------------- Guardar modo de lectura ----------------
-
-  modoNarrador?.addEventListener("change", () => {
-    api.storage.local.set(
-      { modoNarrador: modoNarrador.value },
-      notifyContentScript
-    );
-  });
-
-  // ---------------- Reporte de errores ----------------
+  // ---------------------------------------------------------------------------
+  // Reporte de errores
+  // ---------------------------------------------------------------------------
 
   function inferPlatformFromUrl(url) {
     try {
@@ -111,7 +135,9 @@ document.addEventListener("DOMContentLoaded", () => {
       lines.push("## Logs (opt-in)");
       lines.push("```");
       reporte.logs.forEach((l) => {
-        const msg = (typeof l === "object" && l) ? (l.msg ?? JSON.stringify(l)) : l;
+        const msg = (typeof l === "object" && l)
+          ? (l.msg ?? JSON.stringify(l))
+          : l;
         const line = safeLine(msg);
         if (line) lines.push(line);
       });
@@ -125,7 +151,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const title = encodeURIComponent(`Bug: ${reporte.platform} — lectura de subtítulos`);
     const body = encodeURIComponent(buildIssueBody(reporte).slice(0, 7000));
     const url = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/issues/new?title=${title}&body=${body}`;
-    api.tabs.create({ url });
+    try {
+      api.tabs.create({ url });
+    } catch {
+      // Silencioso
+    }
   }
 
   enviarReporte?.addEventListener("click", () => {
@@ -151,11 +181,16 @@ document.addEventListener("DOMContentLoaded", () => {
       reporte.platform = inferPlatformFromUrl(tab?.url || "");
 
       if (permitirEnvioLogs?.checked) {
-        api.storage.local.get("kathLogs", (data) => {
-          reporte.logs = (data?.kathLogs || []).slice(-100);
+        try {
+          api.storage.local.get("kathLogs", (data) => {
+            reporte.logs = (data?.kathLogs || []).slice(-100);
+            openGithubIssue(reporte);
+            if (reporteError) reporteError.value = "";
+          });
+        } catch {
           openGithubIssue(reporte);
           if (reporteError) reporteError.value = "";
-        });
+        }
       } else {
         openGithubIssue(reporte);
         if (reporteError) reporteError.value = "";
