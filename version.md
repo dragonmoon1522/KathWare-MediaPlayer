@@ -1,6 +1,6 @@
 ## Historial de Versiones KathWare SubtitleReader
 
-**Última actualización:** 2026-01-26
+**Última actualización:** 2026-01-26  
 ✍ **Autora:** Katherine Vargas [(KathWare)](https://kathware.com.ar)
 
 ---
@@ -11,63 +11,95 @@
 
 #### Cambios conceptuales y de arquitectura
 
-* Cambio de nombre del proyecto a **KathWare SubtitleReader**, reflejando su objetivo principal:
-  lectura accesible de subtítulos, no reemplazo del reproductor.
-* Separación clara de responsabilidades por módulos (`pipeline`, `track`, `visual`, `voice`, `overlay`, `adapters`).
+* Cambio de nombre del proyecto a **KathWare SubtitleReader**, reflejando su objetivo real:
+  lectura accesible de subtítulos, **no** reemplazo del reproductor.
+* Reescritura del núcleo con **separación estricta de responsabilidades**:
+  `bootstrap`, `pipeline`, `track`, `visual`, `voice`, `overlay`, `toast`, `adapters`.
+* Arranque seguro mediante `kwsr.bootstrap.js`:
+  * creación de un único namespace global (`window.KWSR`),
+  * guarda crítica contra doble carga del content script.
 * Activación **lazy** de la interfaz:
-  el overlay y el panel **solo se crean cuando el usuario activa la extensión**.
-* Eliminación de cualquier lógica que **fuerce idioma o comportamiento del lector de pantalla**.
+  * el overlay y el panel **solo existen cuando la extensión está activa**,
+  * no se inyecta UI innecesaria en páginas inactivas.
+* Eliminación total de lógica que **fuerce idioma, voz o comportamiento** del lector de pantalla.
   El idioma y la voz dependen exclusivamente de la configuración del usuario.
-* Unificación de atajos de teclado sin uso de `Ctrl`, para evitar conflictos:
+* Unificación y normalización de atajos de teclado, evitando `Ctrl` para reducir conflictos:
 
-  * `Alt + Shift + K` → Activar / desactivar extensión
+  * `Alt + Shift + K` → Activar / desactivar la extensión
   * `Alt + Shift + L` → Rotar modo de lectura (lector → voz → desactivado)
   * `Alt + Shift + O` → Abrir / cerrar panel accesible
 
 #### Lectura de subtítulos
 
 * Detección automática de la **mejor fuente de subtítulos disponible**:
-
   * **TRACK** cuando existen pistas reales (`textTracks`) con cues utilizables.
   * **VISUAL** cuando los subtítulos solo están renderizados en el DOM.
-* Eliminación de selectores manuales irrelevantes cuando solo existe una fuente válida.
-* El selector de pistas de subtítulos solo se muestra cuando **existen múltiples pistas reales** (por ejemplo, subtítulos vs CC).
+* Eliminación de selectores manuales irrelevantes:
+  el usuario **no elige TRACK/VISUAL**, el pipeline decide dinámicamente.
+* Reescritura completa del motor VISUAL:
+  * lectura por **snapshot del contenedor** en Netflix y Max,
+  * independencia del layout interno (spans, `<br>`, re-render).
+* Implementación de deduplicación robusta:
+  * fingerprints estrictos y laxos,
+  * compuerta por tiempo de video para detectar re-render,
+  * ventanas temporales anti-eco.
+* Implementación de **lectura por delta** en subtítulos progresivos
+  (rolling captions en Max / Netflix):
+  * solo se vocaliza el texto nuevo agregado.
 * La extensión **no reimprime subtítulos en pantalla**:
   utiliza únicamente el contenido ya visible o disponible para la lectura.
 
 #### Accesibilidad y compatibilidad
 
 * Adaptaciones automáticas para plataformas con interfaces poco accesibles:
+  * etiquetado dinámico de botones sin texto (`aria-label`, `role`, `tabindex`),
+  * detección y etiquetado de menús de audio y subtítulos.
+* Corrección de reproductores que ocultan controles por inactividad:
+  * módulo `keepAlive` que mantiene la UI visible sin interferir con el usuario.
+* Panel accesible minimalista:
+  * muestra estado real (ON/OFF, modo, motor efectivo),
+  * permite solo acciones seguras (modo de lectura, controles del reproductor).
+* Controles del reproductor accesibles por teclado:
+  * reproducir / pausar,
+  * avanzar / retroceder,
+  * volumen,
+  * pantalla completa (con advertencia de posibles limitaciones).
 
-  * etiquetado dinámico de botones sin texto,
-  * menús de audio y subtítulos accesibles al abrirse.
-* Mantenimiento de controles visibles en reproductores que los ocultan automáticamente.
-* Controles del reproductor accesibles por teclado desde el panel cuando es necesario.
+#### Voz, lector y estabilidad
+
+* Sistema híbrido:
+  * **lector de pantalla** mediante una única *live region* global,
+  * **sintetizador de voz** opcional (Web Speech API).
+* Watchdog de TTS:
+  * detección de bloqueos del sintetizador,
+  * cancelación automática y fallback a modo lector.
+* Cambio automático a modo lector si el TTS falla,
+  sin interrumpir la experiencia del usuario.
 
 #### Logs y diagnóstico
 
-* Sistema de logs técnicos internos para depuración.
+* Sistema interno de logs técnicos desacoplado del flujo principal.
+* Persistencia local en `storage.local` con límite de tamaño.
 * Envío de logs **solo bajo decisión explícita del usuario** al reportar un error.
-* Mejora de mensajes y reportes para facilitar reproducción de bugs reales.
+* Integración directa con GitHub Issues desde el popup accesible.
 
-#### ⚠️ Problema conocido (crítico)
+#### Estado actual
 
-* En algunas plataformas (Netflix, Max, Flow y similares) se detectan **lecturas duplicadas o múltiples del mismo subtítulo**.
-* El bug está identificado en la interacción entre:
-
-  * detección visual,
-  * polling,
-  * y eventos de actualización del DOM.
-* **Este problema bloquea el lanzamiento público** hasta su resolución completa.
+* El bug crítico de **lecturas duplicadas** en Netflix y Max
+  fue **identificado, aislado y corregido** mediante:
+  * snapshot de contenedor,
+  * dedupe por texto + tiempo de video,
+  * gating por re-render.
+* La versión se encuentra en **fase final de validación cruzada**
+  antes del lanzamiento público.
 
 ---
 
 ### **Versión 2.0.0 beta — 2025-11-09**
 
-* Unificación de ramas previas en una arquitectura común para la extensión.
-* Detección automática de reproductores HTML5 y reproductores no accesibles.
+* Unificación de ramas previas en una arquitectura común.
+* Detección automática de reproductores HTML5 y no accesibles.
 * Integración inicial de:
-
   * lectura por lector de pantalla,
   * lectura por sintetizador de voz.
 * Selector manual de fuente de subtítulos (TRACK / VISUAL).
@@ -92,7 +124,9 @@
 
 ---
 
-**Licencia:**
-Este contenido está licenciado bajo **Licencia de Accesibilidad Universal (LAU)** y **Creative Commons BY-NC-SA 4.0**.
-Más información en:
+**Licencia:**  
+Este contenido está licenciado bajo **Licencia de Accesibilidad Universal (LAU)**  
+y **Creative Commons BY-NC-SA 4.0**.
+
+Más información en:  
 [Normas de Uso y Licencias de KathWare](https://kathware.com.ar/normas-de-uso-y-licencias-de-kathware/)
